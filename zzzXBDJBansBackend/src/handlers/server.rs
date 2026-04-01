@@ -84,7 +84,7 @@ pub async fn create_group(
     Extension(user): Extension<Claims>,
     Json(payload): Json<CreateGroupRequest>,
 ) -> impl IntoResponse {
-    let result = sqlx::query("INSERT INTO server_groups (name) VALUES (?)")
+    let result = sqlx::query("INSERT INTO server_groups (name) VALUES ($1)")
         .bind(&payload.name)
         .execute(&state.db)
         .await;
@@ -116,7 +116,7 @@ pub async fn delete_group(
     Extension(user): Extension<Claims>,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    let result = sqlx::query("DELETE FROM server_groups WHERE id = ?")
+    let result = sqlx::query("DELETE FROM server_groups WHERE id = $1")
         .bind(id)
         .execute(&state.db)
         .await;
@@ -149,7 +149,7 @@ pub async fn create_server(
     Json(payload): Json<CreateServerRequest>,
 ) -> impl IntoResponse {
     let result = sqlx::query(
-        "INSERT INTO servers (group_id, name, ip, port, rcon_password, verification_enabled) VALUES (?, ?, ?, ?, ?, ?)"
+        "INSERT INTO servers (group_id, name, ip, port, rcon_password, verification_enabled) VALUES ($1, $2, $3, $4, $5, $6)"
     )
     .bind(payload.group_id)
     .bind(&payload.name)
@@ -190,19 +190,19 @@ pub async fn update_server(
     Json(payload): Json<UpdateServerRequest>,
 ) -> impl IntoResponse {
     if let Some(name) = payload.name {
-        let _ = sqlx::query("UPDATE servers SET name = ? WHERE id = ?").bind(name).bind(id).execute(&state.db).await;
+        let _ = sqlx::query("UPDATE servers SET name = $1 WHERE id = $2").bind(name).bind(id).execute(&state.db).await;
     }
     if let Some(ip) = payload.ip {
-        let _ = sqlx::query("UPDATE servers SET ip = ? WHERE id = ?").bind(ip).bind(id).execute(&state.db).await;
+        let _ = sqlx::query("UPDATE servers SET ip = $1 WHERE id = $2").bind(ip).bind(id).execute(&state.db).await;
     }
     if let Some(port) = payload.port {
-        let _ = sqlx::query("UPDATE servers SET port = ? WHERE id = ?").bind(port).bind(id).execute(&state.db).await;
+        let _ = sqlx::query("UPDATE servers SET port = $1 WHERE id = $2").bind(port).bind(id).execute(&state.db).await;
     }
      if let Some(pwd) = payload.rcon_password {
-        let _ = sqlx::query("UPDATE servers SET rcon_password = ? WHERE id = ?").bind(pwd).bind(id).execute(&state.db).await;
+        let _ = sqlx::query("UPDATE servers SET rcon_password = $1 WHERE id = $2").bind(pwd).bind(id).execute(&state.db).await;
     }
     if let Some(verif) = payload.verification_enabled {
-        let _ = sqlx::query("UPDATE servers SET verification_enabled = ? WHERE id = ?").bind(verif).bind(id).execute(&state.db).await;
+        let _ = sqlx::query("UPDATE servers SET verification_enabled = $1 WHERE id = $2").bind(verif).bind(id).execute(&state.db).await;
     }
 
      let _ = log_admin_action(&state.db, &user.sub, "update_server", &format!("ID: {}", id), "Updated server").await;
@@ -228,7 +228,7 @@ pub async fn delete_server(
     Extension(user): Extension<Claims>,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    let result = sqlx::query("DELETE FROM servers WHERE id = ?")
+    let result = sqlx::query("DELETE FROM servers WHERE id = $1")
         .bind(id)
         .execute(&state.db)
         .await;
@@ -326,7 +326,7 @@ pub async fn get_server_players(
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
     // Get server info
-    let server = sqlx::query_as::<_, Server>("SELECT * FROM servers WHERE id = ?")
+    let server = sqlx::query_as::<_, Server>("SELECT * FROM servers WHERE id = $1")
         .bind(id)
         .fetch_optional(&state.db)
         .await
@@ -392,7 +392,7 @@ pub async fn kick_player(
     Path(id): Path<i64>,
     Json(payload): Json<KickPlayerRequest>,
 ) -> impl IntoResponse {
-     let server = sqlx::query_as::<_, Server>("SELECT * FROM servers WHERE id = ?")
+     let server = sqlx::query_as::<_, Server>("SELECT * FROM servers WHERE id = $1")
         .bind(id)
         .fetch_optional(&state.db)
         .await
@@ -445,7 +445,7 @@ pub async fn ban_player(
     Path(id): Path<i64>,
     Json(payload): Json<BanPlayerRequest>,
 ) -> impl IntoResponse {
-     let server = sqlx::query_as::<_, Server>("SELECT * FROM servers WHERE id = ?")
+     let server = sqlx::query_as::<_, Server>("SELECT * FROM servers WHERE id = $1")
         .bind(id)
         .fetch_optional(&state.db)
         .await
@@ -530,7 +530,7 @@ pub async fn ban_player(
     tracing::info!("Attempting to insert ban for: Name={}, SteamID={}, IP={}", name, steam_id, ip_only);
 
     let db_result = sqlx::query(
-        "INSERT INTO bans (name, steam_id, ip, ban_type, reason, duration, admin_name, expires_at, created_at, status, server_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), 'active', ?)"
+        "INSERT INTO bans (name, steam_id, ip, ban_type, reason, duration, admin_name, expires_at, created_at, status, server_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), 'active', $9)"
     )
     .bind(&name)
     .bind(&steam_id)

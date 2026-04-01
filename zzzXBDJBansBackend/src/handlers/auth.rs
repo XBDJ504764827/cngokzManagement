@@ -32,7 +32,7 @@ pub async fn login(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<LoginRequest>,
 ) -> impl IntoResponse {
-    let row = sqlx::query_as::<_, crate::models::user::Admin>("SELECT * FROM admins WHERE username = ?")
+    let row = sqlx::query_as::<_, crate::models::user::Admin>("SELECT * FROM admins WHERE username = $1")
         .bind(&payload.username)
         .fetch_optional(&state.db)
         .await;
@@ -129,7 +129,7 @@ pub async fn change_password(
     Json(payload): Json<crate::models::user::ChangePasswordRequest>,
 ) -> impl IntoResponse {
     // 1. Fetch current user
-    let row = sqlx::query_as::<_, crate::models::user::Admin>("SELECT * FROM admins WHERE username = ?")
+    let row = sqlx::query_as::<_, crate::models::user::Admin>("SELECT * FROM admins WHERE username = $1")
         .bind(&user.sub)
         .fetch_optional(&state.db)
         .await;
@@ -144,7 +144,7 @@ pub async fn change_password(
 
             // 3. Update to New Password
             let hashed = hash(payload.new_password, DEFAULT_COST).unwrap();
-            let update = sqlx::query("UPDATE admins SET password = ? WHERE id = ?")
+            let update = sqlx::query("UPDATE admins SET password = $1 WHERE id = $2")
                 .bind(hashed)
                 .bind(admin.id)
                 .execute(&state.db)

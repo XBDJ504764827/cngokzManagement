@@ -39,14 +39,13 @@ async fn check_all_servers(state: &Arc<AppState>) -> Result<(), Box<dyn std::err
 
     // 2. Get all Active Account Bans (SteamIDs) to avoid N+1 DB check
     // We only need the steam_ids to know if they are already banned.
-    let account_bans_result = sqlx::query!(
+    let account_bans_result = sqlx::query_scalar::<_, String>(
         "SELECT steam_id FROM bans WHERE status = 'active' AND steam_id IS NOT NULL"
     )
     .fetch_all(&state.db)
     .await?;
 
     let mut active_steamids: HashSet<String> = account_bans_result.into_iter()
-        .map(|r| r.steam_id.clone())
         .collect();
 
     // 3. Get Servers
@@ -110,7 +109,7 @@ async fn check_all_servers(state: &Arc<AppState>) -> Result<(), Box<dyn std::err
 
                             // Insert into DB
                             let insert_result = sqlx::query(
-                                "INSERT INTO bans (name, steam_id, ip, ban_type, reason, duration, admin_name, expires_at, created_at, status, server_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), 'active', ?)"
+                                "INSERT INTO bans (name, steam_id, ip, ban_type, reason, duration, admin_name, expires_at, created_at, status, server_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), 'active', $9)"
                             )
                             .bind(player_name)
                             .bind(steam_id)

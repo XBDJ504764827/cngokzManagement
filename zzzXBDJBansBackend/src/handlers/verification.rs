@@ -100,7 +100,7 @@ pub async fn create_verification(
     }
     
     // Check if exists
-    let exists: bool = sqlx::query_scalar("SELECT COUNT(*) FROM player_verifications WHERE steam_id = ?")
+    let exists: bool = sqlx::query_scalar("SELECT COUNT(*) FROM player_verifications WHERE steam_id = $1")
         .bind(&payload.steam_id)
         .fetch_one(&state.db)
         .await
@@ -110,7 +110,7 @@ pub async fn create_verification(
         return Err("Verification record already exists for this SteamID".to_string());
     }
 
-    let _ = sqlx::query("INSERT INTO player_verifications (steam_id, status, reason) VALUES (?, ?, ?)")
+    let _ = sqlx::query("INSERT INTO player_verifications (steam_id, status, reason) VALUES ($1, $2, $3)")
         .bind(&payload.steam_id)
         .bind(&status)
         .bind(&payload.reason)
@@ -119,7 +119,7 @@ pub async fn create_verification(
         .map_err(|e| e.to_string())?;
 
     // Return the created record (fetch it back or construct it)
-    let row = sqlx::query("SELECT steam_id, status, reason, steam_level, playtime_minutes, created_at, updated_at FROM player_verifications WHERE steam_id = ?")
+    let row = sqlx::query("SELECT steam_id, status, reason, steam_level, playtime_minutes, created_at, updated_at FROM player_verifications WHERE steam_id = $1")
         .bind(&payload.steam_id)
         .fetch_one(&state.db)
         .await
@@ -164,7 +164,7 @@ pub async fn update_verification(
         if !["pending", "verified", "allowed"].contains(&s.as_str()) {
              return Err(format!("Invalid status '{}'. Allowed: pending, verified, allowed", s));
         }
-        let _ = sqlx::query("UPDATE player_verifications SET status = ? WHERE steam_id = ?")
+        let _ = sqlx::query("UPDATE player_verifications SET status = $1 WHERE steam_id = $2")
             .bind(s)
             .bind(&steam_id)
             .execute(&state.db)
@@ -173,7 +173,7 @@ pub async fn update_verification(
     }
     
     if let Some(r) = &payload.reason {
-         let _ = sqlx::query("UPDATE player_verifications SET reason = ? WHERE steam_id = ?")
+         let _ = sqlx::query("UPDATE player_verifications SET reason = $1 WHERE steam_id = $2")
             .bind(r)
             .bind(&steam_id)
             .execute(&state.db)
@@ -182,7 +182,7 @@ pub async fn update_verification(
     }
 
     // Return updated
-    let row = sqlx::query("SELECT steam_id, status, reason, steam_level, playtime_minutes, created_at, updated_at FROM player_verifications WHERE steam_id = ?")
+    let row = sqlx::query("SELECT steam_id, status, reason, steam_level, playtime_minutes, created_at, updated_at FROM player_verifications WHERE steam_id = $1")
         .bind(&steam_id)
         .fetch_one(&state.db)
         .await
@@ -221,7 +221,7 @@ pub async fn delete_verification(
         return Err("Access denied".to_string());
     }
 
-    sqlx::query("DELETE FROM player_verifications WHERE steam_id = ?")
+    sqlx::query("DELETE FROM player_verifications WHERE steam_id = $1")
         .bind(steam_id)
         .execute(&state.db)
         .await
@@ -229,4 +229,3 @@ pub async fn delete_verification(
 
     Ok(StatusCode::NO_CONTENT)
 }
-

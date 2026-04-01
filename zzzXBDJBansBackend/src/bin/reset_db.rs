@@ -1,4 +1,4 @@
-use sqlx::mysql::MySqlPoolOptions;
+use sqlx::postgres::PgPoolOptions;
 use std::env;
 
 #[tokio::main]
@@ -6,17 +6,16 @@ async fn main() {
     dotenvy::dotenv().ok();
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     
-    // Connect to base url (hacky parse)
     let base_url = if let Some(idx) = database_url.rfind('/') {
-        &database_url[..idx+1]
+        format!("{}{}", &database_url[..idx + 1], "postgres")
     } else {
-        &database_url
+        database_url.clone()
     };
-    
+
     println!("Connecting to {} to drop database...", base_url);
 
-    let pool = MySqlPoolOptions::new()
-        .connect(base_url)
+    let pool = PgPoolOptions::new()
+        .connect(&base_url)
         .await
         .expect("Failed to connect to server");
 

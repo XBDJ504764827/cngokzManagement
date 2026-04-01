@@ -1,11 +1,11 @@
 use std::time::Duration;
-use sqlx::{MySqlPool, Row};
+use sqlx::{PgPool, Row};
 use crate::services::steam_api::SteamService;
 
 use futures::stream::{self, StreamExt};
 use std::sync::Arc;
 
-pub async fn start_verification_worker(pool: MySqlPool) {
+pub async fn start_verification_worker(pool: PgPool) {
     let steam_service = Arc::new(SteamService::new());
     tracing::info!("Verification Worker started.");
 
@@ -30,7 +30,7 @@ pub async fn start_verification_worker(pool: MySqlPool) {
     }
 }
 
-async fn process_batch(pool: &MySqlPool, steam_service: &Arc<SteamService>, rows: Vec<sqlx::mysql::MySqlRow>, table: &str) {
+async fn process_batch(pool: &PgPool, steam_service: &Arc<SteamService>, rows: Vec<sqlx::postgres::PgRow>, table: &str) {
     stream::iter(rows)
         .for_each_concurrent(10, |row| {
             let pool = pool.clone();
@@ -48,7 +48,7 @@ async fn process_batch(pool: &MySqlPool, steam_service: &Arc<SteamService>, rows
 
 /// 从 API 获取数据并保存到数据库
 async fn fetch_and_save_data(
-    pool: &MySqlPool, 
+    pool: &PgPool, 
     steam_service: &SteamService, 
     steam_id: &str, 
     table: &str
@@ -71,7 +71,7 @@ async fn fetch_and_save_data(
 
 /// 更新数据并将状态设为 verified
 async fn update_data(
-    pool: &MySqlPool, 
+    pool: &PgPool, 
     table: &str, 
     steam_id: &str, 
     level: Option<i32>, 
@@ -79,7 +79,7 @@ async fn update_data(
     gokz_rating: Option<f64>
 ) -> anyhow::Result<()> {
     let query = format!(
-        "UPDATE {} SET status = 'verified', steam_level = ?, playtime_minutes = ?, gokz_rating = ?, updated_at = NOW() WHERE steam_id = ?", 
+        "UPDATE {} SET status = 'verified', steam_level = $1, playtime_minutes = $2, gokz_rating = $3, updated_at = NOW() WHERE steam_id = $4",
         table
     );
     sqlx::query(&query)

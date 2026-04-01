@@ -114,7 +114,7 @@ pub async fn create_log(
     // Proceeding.
     
     let result = sqlx::query(
-        "INSERT INTO audit_logs (admin_username, action, target, details) VALUES (?, ?, ?, ?)"
+        "INSERT INTO audit_logs (admin_username, action, target, details) VALUES ($1, $2, $3, $4)"
     )
     .bind(payload.admin_username)
     .bind(payload.action)
@@ -128,4 +128,3 @@ pub async fn create_log(
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
-

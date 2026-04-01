@@ -1,1 +1,2 @@
-ALTER TABLE whitelist ADD COLUMN reject_reason TEXT NULL;
+ALTER TABLE whitelist
+    ADD COLUMN IF NOT EXISTS reject_reason TEXT NULL;

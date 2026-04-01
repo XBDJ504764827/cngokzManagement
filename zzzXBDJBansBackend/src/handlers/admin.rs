@@ -69,7 +69,7 @@ pub async fn create_admin(
     };
 
     let result = sqlx::query(
-        "INSERT INTO admins (username, password, role, steam_id, steam_id_3, steam_id_64, remark) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO admins (username, password, role, steam_id, steam_id_3, steam_id_64, remark) VALUES ($1, $2, $3, $4, $5, $6, $7)"
     )
     .bind(&payload.username)
     .bind(hashed)
@@ -118,18 +118,18 @@ pub async fn update_admin(
     Json(payload): Json<UpdateAdminRequest>,
 ) -> impl IntoResponse {
     if let Some(username) = payload.username {
-        let _ = sqlx::query("UPDATE admins SET username = ? WHERE id = ?")
+        let _ = sqlx::query("UPDATE admins SET username = $1 WHERE id = $2")
             .bind(username).bind(id)
             .execute(&state.db).await;
     }
     if let Some(password) = payload.password {
          let hashed = hash(password, DEFAULT_COST).unwrap();
-         let _ = sqlx::query("UPDATE admins SET password = ? WHERE id = ?")
+         let _ = sqlx::query("UPDATE admins SET password = $1 WHERE id = $2")
             .bind(hashed).bind(id)
             .execute(&state.db).await;
     }
     if let Some(role) = payload.role {
-        let _ = sqlx::query("UPDATE admins SET role = ? WHERE id = ?")
+        let _ = sqlx::query("UPDATE admins SET role = $1 WHERE id = $2")
             .bind(role).bind(id)
             .execute(&state.db).await;
     }
@@ -142,7 +142,7 @@ pub async fn update_admin(
         let id2 = steam_service.id64_to_id2(&id64);
         let id3 = steam_service.id64_to_id3(&id64);
         
-        let _ = sqlx::query("UPDATE admins SET steam_id = ?, steam_id_3 = ?, steam_id_64 = ? WHERE id = ?")
+        let _ = sqlx::query("UPDATE admins SET steam_id = $1, steam_id_3 = $2, steam_id_64 = $3 WHERE id = $4")
             .bind(&id2)
             .bind(&id3)
             .bind(&id64)
@@ -151,7 +151,7 @@ pub async fn update_admin(
     }
 
     if let Some(remark) = payload.remark {
-        let _ = sqlx::query("UPDATE admins SET remark = ? WHERE id = ?")
+        let _ = sqlx::query("UPDATE admins SET remark = $1 WHERE id = $2")
             .bind(remark).bind(id)
             .execute(&state.db).await;
     }
@@ -186,7 +186,7 @@ pub async fn delete_admin(
     Extension(user): Extension<Claims>,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    let result = sqlx::query("DELETE FROM admins WHERE id = ?")
+    let result = sqlx::query("DELETE FROM admins WHERE id = $1")
         .bind(id)
         .execute(&state.db)
         .await;

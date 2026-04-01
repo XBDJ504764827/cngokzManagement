@@ -1,3 +1,17 @@
--- 字段已通过手动迁移添加完成
--- 此迁移文件保留为空以保持版本一致性
-SELECT 1;
+ALTER TABLE admins
+    ADD COLUMN IF NOT EXISTS steam_id_3 VARCHAR(64);
+
+ALTER TABLE admins
+    ADD COLUMN IF NOT EXISTS steam_id_64 VARCHAR(64);
+
+ALTER TABLE bans
+    ADD COLUMN IF NOT EXISTS steam_id_3 VARCHAR(64);
+
+ALTER TABLE bans
+    ADD COLUMN IF NOT EXISTS steam_id_64 VARCHAR(64);
+
+ALTER TABLE whitelist
+    ADD COLUMN IF NOT EXISTS steam_id_3 VARCHAR(64);
+
+ALTER TABLE whitelist
+    ADD COLUMN IF NOT EXISTS steam_id_64 VARCHAR(64);

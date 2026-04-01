@@ -1,1 +1,2 @@
-ALTER TABLE admins ADD COLUMN remark TEXT;
+ALTER TABLE admins
+    ADD COLUMN IF NOT EXISTS remark TEXT;

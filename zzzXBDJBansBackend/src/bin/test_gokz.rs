@@ -1,6 +1,4 @@
 use reqwest;
-use serde_json::Value;
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let steam_id = "76561199260261806"; // Need a real banned ID to be sure, but let's test connectivity first.

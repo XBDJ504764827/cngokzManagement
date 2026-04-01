@@ -1,9 +1,8 @@
 use axum::{
     routing::{get, post},
-    Router,
+    Json, Router,
 };
 use utoipa::OpenApi;
-use utoipa_swagger_ui::SwaggerUi;
 use dotenvy::dotenv;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -122,7 +121,7 @@ impl utoipa::Modify for SecurityAddon {
 
 // Application State
 pub struct AppState {
-    pub db: sqlx::MySqlPool,
+    pub db: sqlx::PgPool,
     pub client: reqwest::Client,
 }
 
@@ -142,9 +141,11 @@ async fn main() {
     }
 
     // Force re-run init migration if admins table is missing
-    let table_exists: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'admins' AND TABLE_SCHEMA = DATABASE()")
-        .fetch_one(&pool).await.unwrap_or((0,));
-    if table_exists.0 == 0 {
+    let table_exists: bool = sqlx::query_scalar("SELECT to_regclass('public.admins') IS NOT NULL")
+        .fetch_one(&pool)
+        .await
+        .unwrap_or(false);
+    if !table_exists {
         tracing::info!("'admins' table missing, forcing re-run of init migration...");
         let _ = sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 20260125000000").execute(&pool).await;
     }
@@ -224,6 +225,9 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(root))
+        .route("/api-docs/openapi.json", get(openapi_json))
+        .route("/swagger-ui", get(swagger_ui_notice))
+        .route("/swagger-ui/", get(swagger_ui_notice))
         .route("/api/auth/login", axum::routing::post(handlers::auth::login))
         .route("/api/auth/change-password", axum::routing::post(handlers::auth::change_password))
         // 公开路由：白名单申请（无需认证）
@@ -232,7 +236,6 @@ async fn main() {
         .route("/api/whitelist/player-info", get(handlers::whitelist::get_player_info))
         .route("/api/bans/public", get(handlers::ban::list_public_bans))
         .merge(protected_routes)
-        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -250,7 +253,15 @@ async fn root() -> &'static str {
     "zzzXBDJBans Backend API"
 }
 
-async fn ensure_super_admin(pool: &sqlx::MySqlPool) {
+async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
+    Json(ApiDoc::openapi())
+}
+
+async fn swagger_ui_notice() -> &'static str {
+    "Swagger UI is not bundled in this build. Use /api-docs/openapi.json instead."
+}
+
+async fn ensure_super_admin(pool: &sqlx::PgPool) {
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM admins")
         .fetch_one(pool)
         .await
@@ -263,7 +274,7 @@ async fn ensure_super_admin(pool: &sqlx::MySqlPool) {
         let hashed = bcrypt::hash(password, bcrypt::DEFAULT_COST).expect("Failed to hash password");
         
         let _ = sqlx::query(
-            "INSERT INTO admins (username, password, role) VALUES (?, ?, 'super_admin')"
+            "INSERT INTO admins (username, password, role) VALUES ($1, $2, 'super_admin')"
         )
         .bind(username)
         .bind(hashed)

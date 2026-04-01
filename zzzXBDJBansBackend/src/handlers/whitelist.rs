@@ -124,7 +124,7 @@ pub async fn apply_whitelist(
     // 检查是否已存在（任何状态）
     // 获取已存在的记录状态
     let existing_status: Option<String> = sqlx::query_scalar(
-        "SELECT status FROM whitelist WHERE steam_id_64 = ? OR steam_id = ?"
+        "SELECT status FROM whitelist WHERE steam_id_64 = $1 OR steam_id = $2"
     )
     .bind(&steam_id_64)
     .bind(&steam_id_2)
@@ -143,7 +143,7 @@ pub async fn apply_whitelist(
     }
 
     let result = sqlx::query(
-        "INSERT INTO whitelist (steam_id, steam_id_3, steam_id_64, name, status) VALUES (?, ?, ?, ?, 'pending')",
+        "INSERT INTO whitelist (steam_id, steam_id_3, steam_id_64, name, status) VALUES ($1, $2, $3, $4, 'pending')",
     )
     .bind(&steam_id_2)
     .bind(&steam_id_3)
@@ -199,7 +199,7 @@ pub async fn create_whitelist(
 
 
     let result = sqlx::query(
-        "INSERT INTO whitelist (steam_id, steam_id_3, steam_id_64, name, status, admin_name) VALUES (?, ?, ?, ?, 'approved', ?)",
+        "INSERT INTO whitelist (steam_id, steam_id_3, steam_id_64, name, status, admin_name) VALUES ($1, $2, $3, $4, 'approved', $5)",
     )
     .bind(&steam_id_2)
     .bind(&steam_id_3)
@@ -237,7 +237,7 @@ pub async fn approve_whitelist(
     Extension(user): Extension<Claims>,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    let result = sqlx::query("UPDATE whitelist SET status = 'approved', admin_name = ? WHERE id = ?")
+    let result = sqlx::query("UPDATE whitelist SET status = 'approved', admin_name = $1 WHERE id = $2")
         .bind(&user.sub)
         .bind(id)
         .execute(&state.db)
@@ -273,7 +273,7 @@ pub async fn reject_whitelist(
     Path(id): Path<i64>,
     Json(payload): Json<RejectWhitelistRequest>,
 ) -> impl IntoResponse {
-    let result = sqlx::query("UPDATE whitelist SET status = 'rejected', reject_reason = ?, admin_name = ? WHERE id = ?")
+    let result = sqlx::query("UPDATE whitelist SET status = 'rejected', reject_reason = $1, admin_name = $2 WHERE id = $3")
         .bind(&payload.reason)
         .bind(&user.sub)
         .bind(id)
@@ -307,7 +307,7 @@ pub async fn delete_whitelist(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    let result = sqlx::query("DELETE FROM whitelist WHERE id = ?")
+    let result = sqlx::query("DELETE FROM whitelist WHERE id = $1")
         .bind(id)
         .execute(&state.db)
         .await;

@@ -1,10 +1,25 @@
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE TABLE IF NOT EXISTS player_verifications (
     steam_id VARCHAR(32) NOT NULL PRIMARY KEY,
-    status ENUM('pending', 'allowed', 'denied') NOT NULL DEFAULT 'pending',
+    status VARCHAR(32) NOT NULL DEFAULT 'pending',
     reason TEXT NULL,
     steam_level INT NULL,
     playtime_minutes INT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_status (status)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_player_verifications_status ON player_verifications (status);
+
+DROP TRIGGER IF EXISTS trg_player_verifications_updated_at ON player_verifications;
+CREATE TRIGGER trg_player_verifications_updated_at
+    BEFORE UPDATE ON player_verifications
+    FOR EACH ROW
+    EXECUTE FUNCTION set_updated_at();

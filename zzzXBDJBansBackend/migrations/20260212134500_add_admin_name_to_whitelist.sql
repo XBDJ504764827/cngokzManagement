@@ -1,1 +1,2 @@
-ALTER TABLE whitelist ADD COLUMN admin_name VARCHAR(255) NULL;
+ALTER TABLE whitelist
+    ADD COLUMN IF NOT EXISTS admin_name VARCHAR(255) NULL;

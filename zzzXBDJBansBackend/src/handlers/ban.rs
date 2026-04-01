@@ -118,7 +118,7 @@ pub async fn check_ban(
     // 1. Check for DIRECT Account Ban (优先使用 steam_id_64 匹配)
     let account_ban = if !steam_id_64.is_empty() {
         sqlx::query_as::<_, Ban>(
-            "SELECT * FROM bans WHERE status = 'active' AND (steam_id_64 = ? OR steam_id = ?) LIMIT 1"
+            "SELECT * FROM bans WHERE status = 'active' AND (steam_id_64 = $1 OR steam_id = $2) LIMIT 1"
         )
         .bind(&steam_id_64)
         .bind(&steam_id)
@@ -126,7 +126,7 @@ pub async fn check_ban(
         .await
     } else {
         sqlx::query_as::<_, Ban>(
-            "SELECT * FROM bans WHERE status = 'active' AND steam_id = ? LIMIT 1"
+            "SELECT * FROM bans WHERE status = 'active' AND steam_id = $1 LIMIT 1"
         )
         .bind(&steam_id)
         .fetch_optional(&state.db)
@@ -140,7 +140,7 @@ pub async fn check_ban(
             if let Some(expires_at) = b.expires_at {
                 if Utc::now() > expires_at {
 
-                    let _ = sqlx::query("UPDATE bans SET status = 'expired' WHERE id = ?")
+                    let _ = sqlx::query("UPDATE bans SET status = 'expired' WHERE id = $1")
                         .bind(b.id).execute(&state.db).await;
                     // Expired - Do NOT return yet. Treat as not banned, proceed to check IP.
                 } else {
@@ -162,7 +162,7 @@ pub async fn check_ban(
     // 2. Check for IP Ban (Matches IP AND ban_type = 'ip')
 
     let ip_ban = sqlx::query_as::<_, Ban>(
-        "SELECT * FROM bans WHERE status = 'active' AND ip = ? AND ban_type = 'ip' LIMIT 1"
+        "SELECT * FROM bans WHERE status = 'active' AND ip = $1 AND ban_type = 'ip' LIMIT 1"
     )
     .bind(&ip)
     .fetch_optional(&state.db)
@@ -175,7 +175,7 @@ pub async fn check_ban(
             if let Some(expires_at) = b.expires_at {
                 if Utc::now() > expires_at {
 
-                    let _ = sqlx::query("UPDATE bans SET status = 'expired' WHERE id = ?")
+                    let _ = sqlx::query("UPDATE bans SET status = 'expired' WHERE id = $1")
                         .bind(b.id).execute(&state.db).await;
                     return (StatusCode::NOT_FOUND, Json("Not banned (Expired)")).into_response();
                 }
@@ -189,11 +189,12 @@ pub async fn check_ban(
             // Inherit expiration from the parent IP ban
             let expires_at = b.expires_at; 
             
-            let insert_result = sqlx::query(
-                "INSERT INTO bans (name, steam_id, ip, ban_type, reason, duration, admin_name, expires_at, created_at, status, server_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), 'active', ?)"
+            let insert_result = sqlx::query_scalar::<_, i64>(
+                "INSERT INTO bans (name, steam_id, steam_id_64, ip, ban_type, reason, duration, admin_name, expires_at, created_at, status, server_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), 'active', $10) RETURNING id"
             )
             .bind("Auto-Banned") 
             .bind(&steam_id)
+            .bind(&steam_id_64)
             .bind(&ip)
             .bind("account") 
             .bind(&reason)
@@ -201,12 +202,11 @@ pub async fn check_ban(
             .bind("System (IP Match)")
             .bind(expires_at)
             .bind(b.server_id)
-            .execute(&state.db)
+            .fetch_one(&state.db)
             .await;
 
             match insert_result {
-                Ok(res) => {
-                    let new_id = res.last_insert_id() as i64;
+                Ok(new_id) => {
                     tracing::info!("CHECK_BAN: Auto-Ban Created Successfully. New ID: {}", new_id);
                     let new_ban = Ban {
                         id: new_id,
@@ -387,7 +387,7 @@ pub async fn create_ban(
         .unwrap_or_default();
 
     let result = sqlx::query(
-        "INSERT INTO bans (name, steam_id, steam_id_3, steam_id_64, ip, ban_type, reason, duration, admin_name, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO bans (name, steam_id, steam_id_3, steam_id_64, ip, ban_type, reason, duration, admin_name, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
     )
     .bind(&payload.name)
     .bind(&steam_id_2)
@@ -439,39 +439,39 @@ pub async fn update_ban(
     Json(payload): Json<UpdateBanRequest>,
 ) -> impl IntoResponse {
     if let Some(status) = payload.status {
-        let _ = sqlx::query("UPDATE bans SET status = ? WHERE id = ?")
+        let _ = sqlx::query("UPDATE bans SET status = $1 WHERE id = $2")
             .bind(status).bind(id)
             .execute(&state.db).await;
     }
     // ... (other fields name, steam_id etc same as before)
     if let Some(name) = payload.name {
-         let _ = sqlx::query("UPDATE bans SET name = ? WHERE id = ?")
+         let _ = sqlx::query("UPDATE bans SET name = $1 WHERE id = $2")
             .bind(name).bind(id)
             .execute(&state.db).await;
     }
     if let Some(steam_id) = payload.steam_id {
-         let _ = sqlx::query("UPDATE bans SET steam_id = ? WHERE id = ?")
+         let _ = sqlx::query("UPDATE bans SET steam_id = $1 WHERE id = $2")
             .bind(steam_id).bind(id)
             .execute(&state.db).await;
     }
     if let Some(ip) = payload.ip {
-         let _ = sqlx::query("UPDATE bans SET ip = ? WHERE id = ?")
+         let _ = sqlx::query("UPDATE bans SET ip = $1 WHERE id = $2")
             .bind(ip).bind(id)
             .execute(&state.db).await;
     }
     if let Some(ban_type) = payload.ban_type {
-         let _ = sqlx::query("UPDATE bans SET ban_type = ? WHERE id = ?")
+         let _ = sqlx::query("UPDATE bans SET ban_type = $1 WHERE id = $2")
             .bind(ban_type).bind(id)
             .execute(&state.db).await;
     }
     if let Some(reason) = payload.reason {
-         let _ = sqlx::query("UPDATE bans SET reason = ? WHERE id = ?")
+         let _ = sqlx::query("UPDATE bans SET reason = $1 WHERE id = $2")
             .bind(reason).bind(id)
             .execute(&state.db).await;
     }
     if let Some(duration) = payload.duration {
          let expires_at = calculate_expires_at(&duration);
-         let _ = sqlx::query("UPDATE bans SET duration = ?, expires_at = ? WHERE id = ?")
+         let _ = sqlx::query("UPDATE bans SET duration = $1, expires_at = $2 WHERE id = $3")
             .bind(duration).bind(expires_at).bind(id)
             .execute(&state.db).await;
     }
@@ -517,7 +517,7 @@ pub async fn delete_ban(
 
     // 2. Fetch Ban Details (for RCON unban)
     // Removed unwrap_or(None) to see actual error if mapping fails
-    let ban_query = sqlx::query_as::<_, Ban>("SELECT * FROM bans WHERE id = ?")
+    let ban_query = sqlx::query_as::<_, Ban>("SELECT * FROM bans WHERE id = $1")
         .bind(id)
         .fetch_optional(&state.db)
         .await;
@@ -538,7 +538,7 @@ pub async fn delete_ban(
 
     // 3. Delete from DB first (for fast response)
 
-    let result = sqlx::query("DELETE FROM bans WHERE id = ?")
+    let result = sqlx::query("DELETE FROM bans WHERE id = $1")
         .bind(id)
         .execute(&state.db)
         .await;

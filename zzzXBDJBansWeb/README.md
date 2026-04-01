@@ -42,7 +42,7 @@ npm install
 **示例 `.env.development`**:
 
 ```ini
-VITE_API_BASE_URL=http://localhost:8080/api
+VITE_API_BASE_URL=http://192.168.0.136:8080/api
 ```
 
 ### 4. 启动开发服务器
@@ -51,7 +51,12 @@ VITE_API_BASE_URL=http://localhost:8080/api
 npm run dev
 ```
 
-启动后，访问 `http://localhost:5173` 即可预览项目。
+启动后：
+
+- 本机访问 `http://localhost:5173`
+- 局域网其他设备访问 `http://<前端机器IP>:5173`
+
+默认开发配置会请求 `http://192.168.0.136:8080/api`。
 
 ## 📦 构建生产版本
 

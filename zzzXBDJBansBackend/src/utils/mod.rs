@@ -53,13 +53,13 @@ pub fn calculate_expires_at(duration_str: &str) -> Option<DateTime<Utc>> {
 }
 
 pub async fn log_admin_action(
-    pool: &sqlx::MySqlPool,
+    pool: &sqlx::PgPool,
     admin_username: &str,
     action: &str,
     target: &str,
     details: &str,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("INSERT INTO audit_logs (admin_username, action, target, details) VALUES (?, ?, ?, ?)")
+    sqlx::query("INSERT INTO audit_logs (admin_username, action, target, details) VALUES ($1, $2, $3, $4)")
         .bind(admin_username)
         .bind(action)
         .bind(target)
