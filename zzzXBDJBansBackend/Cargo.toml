@@ -1,0 +1,29 @@
+[package]
+name = "zzzXBDJBansBackend"
+version = "0.1.0"
+edition = "2021"
+default-run = "zzzXBDJBansBackend"
+
+[dependencies]
+axum = "0.7.5"
+bcrypt = "0.15.1"
+chrono = { version = "0.4.38", features = ["serde"] }
+dotenvy = "0.15.7"
+jsonwebtoken = "9.3.0"
+redis = { version = "1.0.2", features = ["tokio-comp"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+sqlx = { version = "0.8.6", features = ["mysql", "runtime-tokio-rustls", "macros", "chrono", "uuid"] }
+tokio = { version = "1.49.0", features = ["full"] }
+tower-http = { version = "0.5.2", features = ["cors", "trace"] }
+tracing = "0.1.44"
+tracing-subscriber = "0.3.22"
+uuid = { version = "1.20.0", features = ["serde", "v4"] }
+regex = "1.10.4"
+anyhow = "1.0"
+rcon = "0.6.0"
+byteorder = "1.5.0"
+reqwest = { version = "0.12.12", features = ["json"] }
+utoipa = { version = "5.3.1", features = ["axum_extras", "uuid", "chrono"] }
+utoipa-swagger-ui = { version = "8.1.0", features = ["axum"] }
+futures = "0.3"

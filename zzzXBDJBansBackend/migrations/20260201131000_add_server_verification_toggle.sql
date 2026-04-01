@@ -1,0 +1,1 @@
+ALTER TABLE servers ADD COLUMN verification_enabled BOOLEAN NOT NULL DEFAULT TRUE;

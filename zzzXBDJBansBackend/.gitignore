@@ -1,0 +1,10 @@
+/target
+
+# 环境变量
+.env
+.env.*
+
+# 常见私密文件
+*.key
+*.pem
+*.crt

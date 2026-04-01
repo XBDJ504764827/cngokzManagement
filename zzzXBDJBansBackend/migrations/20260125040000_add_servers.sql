@@ -1,0 +1,18 @@
+-- Server Groups
+CREATE TABLE IF NOT EXISTS server_groups (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(128) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Servers
+CREATE TABLE IF NOT EXISTS servers (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    group_id BIGINT NOT NULL,
+    name VARCHAR(128) NOT NULL,
+    ip VARCHAR(45) NOT NULL,
+    port INTEGER NOT NULL,
+    rcon_password VARCHAR(128),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (group_id) REFERENCES server_groups(id) ON DELETE CASCADE
+);

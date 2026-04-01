@@ -1,0 +1,31 @@
+-- Add missing columns to admins table
+-- Add missing columns to admins table idempotently in MySQL
+SET @s = (SELECT IF(
+    (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'admins' AND COLUMN_NAME = 'steam_id_3' AND TABLE_SCHEMA = DATABASE()) = 0,
+    'ALTER TABLE admins ADD COLUMN steam_id_3 VARCHAR(64)',
+    'SELECT 1'
+));
+PREPARE stmt FROM @s;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @s = (SELECT IF(
+    (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'admins' AND COLUMN_NAME = 'steam_id_64' AND TABLE_SCHEMA = DATABASE()) = 0,
+    'ALTER TABLE admins ADD COLUMN steam_id_64 VARCHAR(64)',
+    'SELECT 1'
+));
+PREPARE stmt FROM @s;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @s = (SELECT IF(
+    (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'admins' AND COLUMN_NAME = 'remark' AND TABLE_SCHEMA = DATABASE()) = 0,
+    'ALTER TABLE admins ADD COLUMN remark TEXT',
+    'SELECT 1'
+));
+PREPARE stmt FROM @s;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+
+

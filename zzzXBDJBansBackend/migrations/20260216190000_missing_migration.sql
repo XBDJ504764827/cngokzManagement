@@ -1,0 +1,2 @@
+-- Placeholder migration to fix VersionMissing(20260216190000) panic
+-- The user deleted this file, restoring it to prevent startup panic.

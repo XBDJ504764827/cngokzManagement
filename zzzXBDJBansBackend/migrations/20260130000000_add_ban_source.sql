@@ -1,0 +1,2 @@
+ALTER TABLE bans ADD COLUMN server_id BIGINT NULL;
+ALTER TABLE bans ADD CONSTRAINT fk_bans_server_id FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE SET NULL;
