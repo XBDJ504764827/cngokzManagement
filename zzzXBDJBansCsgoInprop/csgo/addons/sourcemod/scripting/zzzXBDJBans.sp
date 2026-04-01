@@ -1,17 +1,13 @@
 #include <sourcemod>
-#include <sdktools>
-#include <sdkhooks>
+#include "SteamWorks.inc"
 
 #pragma semicolon 1
 #pragma newdecls required
 
-#define PLUGIN_VERSION "3.4.3"
+#define PLUGIN_VERSION "4.0.0"
+#define DEFAULT_RETRY_AFTER 2.0
 
-// 验证标准配置
-#define REQUIRED_RATING 3.0
-#define REQUIRED_LEVEL 1
-
-public Plugin myinfo = 
+public Plugin myinfo =
 {
     name = "zzzXBDJBans",
     author = "wwq",
@@ -20,532 +16,317 @@ public Plugin myinfo =
     url = ""
 };
 
-Database g_hDatabase = null;
 ConVar g_cvServerId;
+ConVar g_cvApiUrl;
+ConVar g_cvApiToken;
+ConVar g_cvRequestTimeout;
+
+bool g_bRequestPending[MAXPLAYERS + 1];
 
 public void OnPluginStart()
 {
+    ValidateSteamWorksSupport();
+
     g_cvServerId = CreateConVar("zzzxbdjbans_server_id", "1", "Server ID for this server instance");
-    
-    LogMessage("zzzXBDJBans Plugin v%s Loaded. Starting database connection...", PLUGIN_VERSION);
-    Database.Connect(OnDatabaseConnected, "zzzXBDJBans");
-    
+    g_cvApiUrl = CreateConVar("zzzxbdjbans_api_url", "http://127.0.0.1:3000/api/plugin/access-check", "Backend access-check API URL");
+    g_cvApiToken = CreateConVar("zzzxbdjbans_api_token", "", "Backend plugin API token");
+    g_cvRequestTimeout = CreateConVar("zzzxbdjbans_api_timeout", "10", "HTTP timeout in seconds", _, true, 3.0, true, 30.0);
+
+    AutoExecConfig(true, "zzzXBDJBans");
+
     CreateTimer(60.0, Timer_CheckBans, _, TIMER_REPEAT);
+    LogMessage("zzzXBDJBans Plugin v%s Loaded. Using backend API mode.", PLUGIN_VERSION);
 }
 
-public void OnDatabaseConnected(Database db, const char[] error, any data)
+public void OnClientDisconnect(int client)
 {
-    if (db == null)
+    if (client > 0 && client <= MaxClients)
     {
-        LogError("Failed to connect to zzzXBDJBans database: %s", error);
-        return;
+        g_bRequestPending[client] = false;
     }
-    
-    g_hDatabase = db;
-    g_hDatabase.SetCharset("utf8mb4");
-    LogMessage("Connected to zzzXBDJBans database successfully.");
 }
 
 public void OnClientPostAdminCheck(int client)
 {
-    if (IsFakeClient(client) || !g_hDatabase)
-        return;
-
-    StartVerification(client);
-}
-
-// ============================================
-// 验证流程入口
-// ============================================
-
-void StartVerification(int client)
-{
-    char steamId[64];
-    if (!GetClientAuthId(client, AuthId_SteamID64, steamId, sizeof(steamId)))
+    if (IsFakeClient(client))
     {
-        KickClient(client, "验证错误：无效的SteamID");
         return;
     }
 
-    // 检查服务器是否启用验证
-    char query[256];
-    Format(query, sizeof(query), "SELECT verification_enabled FROM servers WHERE id = %d", g_cvServerId.IntValue);
-    g_hDatabase.Query(SQL_CheckVerificationEnabledCallback, query, GetClientUserId(client));
+    SendAccessCheck(client, true);
 }
 
-public void SQL_CheckVerificationEnabledCallback(Database db, DBResultSet results, const char[] error, any userid)
+void ValidateSteamWorksSupport()
 {
-    int client = GetClientOfUserId(userid);
-    if (client == 0) return;
-
-    bool enabled = true;
-
-    if (results == null)
+    if (GetFeatureStatus(FeatureType_Native, "SteamWorks_CreateHTTPRequest") != FeatureStatus_Available
+        || GetFeatureStatus(FeatureType_Native, "SteamWorks_SetHTTPCallbacks") != FeatureStatus_Available
+        || GetFeatureStatus(FeatureType_Native, "SteamWorks_SendHTTPRequest") != FeatureStatus_Available)
     {
-        LogError("Failed to check verification setting: %s", error);
+        SetFailState("SteamWorks extension is required for zzzXBDJBans API mode.");
     }
-    else if (results.FetchRow())
-    {
-        enabled = results.FetchInt(0) != 0;
-    }
+}
 
-    if (!enabled)
+void SendAccessCheck(int client, bool strict)
+{
+    if (!IsClientInGame(client) || IsFakeClient(client) || g_bRequestPending[client])
     {
-        LogMessage("Verification disabled for this server. Skipping for %N.", client);
-        CheckBansAndAdmin(client);
         return;
     }
 
-    // Step 1: 首先检查白名单
-    CheckWhitelist(client);
-}
-
-// ============================================
-// Step 1: 白名单检查（最优先）
-// ============================================
-
-void CheckWhitelist(int client)
-{
-    char steamId[64];
-    char steamId2[64];
-    
-    GetClientAuthId(client, AuthId_SteamID64, steamId, sizeof(steamId));
-    GetClientAuthId(client, AuthId_Steam2, steamId2, sizeof(steamId2));
-    
-    char query[512];
-    Format(query, sizeof(query), 
-        "SELECT status FROM zzzXBDJBans.whitelist WHERE steam_id_64 = '%s' OR steam_id = '%s' OR steam_id = '%s'",
-        steamId, steamId, steamId2);
-    
-    g_hDatabase.Query(SQL_CheckWhitelistCallback, query, GetClientUserId(client));
-}
-
-public void SQL_CheckWhitelistCallback(Database db, DBResultSet results, const char[] error, any userid)
-{
-    int client = GetClientOfUserId(userid);
-    if (client == 0) return;
-
-    if (results == null)
-    {
-        LogError("Whitelist check failed: %s", error);
-        KickClient(client, "验证错误：数据库查询失败");
-        return;
-    }
-
-    if (results.FetchRow())
-    {
-        char status[32];
-        results.FetchString(0, status, sizeof(status));
-
-        if (StrEqual(status, "rejected"))
-        {
-            KickClient(client, "您已被拒绝访问本服务器");
-            LogMessage("Player %N blocked (whitelist rejected).", client);
-            return;
-        }
-
-        if (StrEqual(status, "approved"))
-        {
-            // 在白名单中，直接放行
-            LogMessage("Player %N is in WHITELIST. Direct pass.", client);
-            CheckBansAndAdmin(client);
-            return;
-        }
-        
-        // pending 状态，继续往下走，看是否满足自动验证
-    }
-
-
-    // 不在白名单，进入 Step 2: 检查缓存
-    LogMessage("Player %N not in whitelist. Checking cache...", client);
-    CheckCache(client);
-}
-
-// ============================================
-// Step 2: 缓存检查
-// ============================================
-
-void CheckCache(int client)
-{
-    char steamId[64];
-    if (!GetClientAuthId(client, AuthId_SteamID64, steamId, sizeof(steamId))) return;
-
-    char query[512];
-    Format(query, sizeof(query), 
-        "SELECT status FROM zzzXBDJBans.player_cache WHERE steam_id = '%s' AND status = 'allowed'", 
-        steamId);
-    
-    g_hDatabase.Query(SQL_CheckCacheCallback, query, GetClientUserId(client));
-}
-
-public void SQL_CheckCacheCallback(Database db, DBResultSet results, const char[] error, any userid)
-{
-    int client = GetClientOfUserId(userid);
-    if (client == 0) return;
-
-    if (results == null)
-    {
-        LogError("Cache check failed: %s", error);
-        KickClient(client, "验证错误：数据库查询失败");
-        return;
-    }
-
-    if (results.FetchRow())
-    {
-        // 缓存中有 allowed 状态，直接放行
-        LogMessage("Player %N found in cache with ALLOWED status. Direct pass.", client);
-        CheckBansAndAdmin(client);
-        return;
-    }
-
-    // 缓存中没有或不是 allowed，进入 Step 3: 创建验证请求
-    LogMessage("Player %N not in cache. Creating verification request...", client);
-    CreateVerificationRequest(client);
-}
-
-// ============================================
-// Step 3: 创建验证请求，等待后端获取数据
-// ============================================
-
-void CreateVerificationRequest(int client)
-{
+    char apiUrl[256];
+    char apiToken[128];
+    char serverId[16];
+    char steamId64[64];
     char steamId[64];
     char playerName[128];
     char ip[32];
-    
-    if (!GetClientAuthId(client, AuthId_SteamID64, steamId, sizeof(steamId))) return;
-    GetClientName(client, playerName, sizeof(playerName));
-    GetClientIP(client, ip, sizeof(ip));
-    
-    char escapedName[256];
-    g_hDatabase.Escape(playerName, escapedName, sizeof(escapedName));
-    
-    char query[1024];
-    Format(query, sizeof(query), 
-        "INSERT INTO zzzXBDJBans.player_cache (steam_id, player_name, ip_address, status) VALUES ('%s', '%s', '%s', 'pending') ON DUPLICATE KEY UPDATE player_name='%s', ip_address='%s', status='pending', steam_level=NULL, gokz_rating=NULL, updated_at=NOW()", 
-        steamId, escapedName, ip, escapedName, ip);
-    
-    g_hDatabase.Query(SQL_CreateRequestCallback, query, GetClientUserId(client));
-}
 
-public void SQL_CreateRequestCallback(Database db, DBResultSet results, const char[] error, any userid)
-{
-    int client = GetClientOfUserId(userid);
-    if (client == 0) return;
+    g_cvApiUrl.GetString(apiUrl, sizeof(apiUrl));
+    g_cvApiToken.GetString(apiToken, sizeof(apiToken));
+    IntToString(g_cvServerId.IntValue, serverId, sizeof(serverId));
 
-    if (results == null)
+    TrimString(apiUrl);
+    TrimString(apiToken);
+
+    if (apiUrl[0] == '\0' || apiToken[0] == '\0')
     {
-        LogError("Failed to create verification request: %s", error);
-        KickClient(client, "验证错误：数据库错误");
+        HandleAccessFailure(client, strict, "API 配置缺失");
         return;
     }
 
-    // 等待后端获取数据
-    CreateTimer(1.5, Timer_PollVerification, userid);
+    if (!GetClientAuthId(client, AuthId_SteamID64, steamId64, sizeof(steamId64)))
+    {
+        HandleAccessFailure(client, strict, "无效的 SteamID64");
+        return;
+    }
+
+    if (!GetClientAuthId(client, AuthId_Steam2, steamId, sizeof(steamId)))
+    {
+        steamId[0] = '\0';
+    }
+
+    GetClientName(client, playerName, sizeof(playerName));
+    GetClientIP(client, ip, sizeof(ip), true);
+
+    Handle request = SteamWorks_CreateHTTPRequest(k_EHTTPMethodPOST, apiUrl);
+    if (request == null)
+    {
+        HandleAccessFailure(client, strict, "无法创建 HTTP 请求");
+        return;
+    }
+
+    int contextValue = GetClientUserId(client);
+    if (!strict)
+    {
+        contextValue *= -1;
+    }
+
+    g_bRequestPending[client] = true;
+
+    SteamWorks_SetHTTPRequestNetworkActivityTimeout(request, g_cvRequestTimeout.IntValue);
+    SteamWorks_SetHTTPRequestContextValue(request, contextValue);
+    SteamWorks_SetHTTPRequestHeaderValue(request, "X-Plugin-Token", apiToken);
+    SteamWorks_SetHTTPRequestHeaderValue(request, "Content-Type", "application/x-www-form-urlencoded");
+    SteamWorks_SetHTTPRequestGetOrPostParameter(request, "server_id", serverId);
+    SteamWorks_SetHTTPRequestGetOrPostParameter(request, "steam_id_64", steamId64);
+    SteamWorks_SetHTTPRequestGetOrPostParameter(request, "steam_id", steamId);
+    SteamWorks_SetHTTPRequestGetOrPostParameter(request, "player_name", playerName);
+    SteamWorks_SetHTTPRequestGetOrPostParameter(request, "ip_address", ip);
+    SteamWorks_SetHTTPCallbacks(request, OnAccessCheckCompleted);
+
+    if (!SteamWorks_SendHTTPRequest(request))
+    {
+        g_bRequestPending[client] = false;
+        CloseHandle(request);
+        HandleAccessFailure(client, strict, "发送 HTTP 请求失败");
+    }
 }
 
-public Action Timer_PollVerification(Handle timer, any userid)
+public int OnAccessCheckCompleted(Handle request, bool failure, bool requestSuccessful, EHTTPStatusCode statusCode, any contextData)
+{
+    int userid = contextData;
+    bool strict = true;
+
+    if (userid < 0)
+    {
+        strict = false;
+        userid *= -1;
+    }
+
+    int client = GetClientOfUserId(userid);
+    if (client == 0)
+    {
+        CloseHandle(request);
+        return 0;
+    }
+
+    g_bRequestPending[client] = false;
+
+    char body[1024];
+    body[0] = '\0';
+    ReadResponseBody(request, body, sizeof(body));
+    CloseHandle(request);
+
+    if (failure || !requestSuccessful)
+    {
+        LogError("Access check HTTP request failed for %N", client);
+        HandleAccessFailure(client, strict, "验证服务暂时不可用");
+        return 0;
+    }
+
+    if (view_as<int>(statusCode) != 200)
+    {
+        LogError("Access check returned HTTP %d for %N. Body: %s", view_as<int>(statusCode), client, body);
+        HandleAccessFailure(client, strict, "验证服务返回异常");
+        return 0;
+    }
+
+    char action[32];
+    char message[256];
+    int retryAfter;
+
+    ParseApiResponse(body, action, sizeof(action), message, sizeof(message), retryAfter);
+
+    if (StrEqual(action, "allow"))
+    {
+        return 0;
+    }
+
+    if (StrEqual(action, "pending"))
+    {
+        if (strict)
+        {
+            if (retryAfter <= 0)
+            {
+                retryAfter = RoundToFloor(DEFAULT_RETRY_AFTER);
+            }
+            CreateTimer(float(retryAfter), Timer_RetryAccessCheck, userid);
+        }
+        return 0;
+    }
+
+    if (message[0] == '\0')
+    {
+        strcopy(message, sizeof(message), "访问被拒绝");
+    }
+
+    KickClient(client, "%s", message);
+    return 0;
+}
+
+void ReadResponseBody(Handle request, char[] body, int bodyLen)
+{
+    int size = 0;
+    if (!SteamWorks_GetHTTPResponseBodySize(request, size) || size <= 0)
+    {
+        body[0] = '\0';
+        return;
+    }
+
+    if (size >= bodyLen)
+    {
+        size = bodyLen - 1;
+    }
+
+    if (!SteamWorks_GetHTTPResponseBodyData(request, body, size))
+    {
+        body[0] = '\0';
+        return;
+    }
+
+    body[size] = '\0';
+}
+
+void ParseApiResponse(const char[] body, char[] action, int actionLen, char[] message, int messageLen, int &retryAfter)
+{
+    action[0] = '\0';
+    message[0] = '\0';
+    retryAfter = RoundToFloor(DEFAULT_RETRY_AFTER);
+
+    ExtractResponseValue(body, "action=", action, actionLen);
+    ExtractResponseValue(body, "message=", message, messageLen);
+
+    char retryBuffer[16];
+    ExtractResponseValue(body, "retry_after=", retryBuffer, sizeof(retryBuffer));
+    if (retryBuffer[0] != '\0')
+    {
+        retryAfter = StringToInt(retryBuffer);
+    }
+
+    TrimString(action);
+    TrimString(message);
+}
+
+void ExtractResponseValue(const char[] body, const char[] key, char[] output, int outputLen)
+{
+    output[0] = '\0';
+
+    int start = StrContains(body, key);
+    if (start == -1)
+    {
+        return;
+    }
+
+    start += strlen(key);
+
+    int bodyLen = strlen(body);
+    int end = start;
+    while (end < bodyLen && body[end] != '\n' && body[end] != '\r')
+    {
+        end++;
+    }
+
+    int copyLen = end - start;
+    if (copyLen <= 0)
+    {
+        return;
+    }
+
+    if (copyLen >= outputLen)
+    {
+        copyLen = outputLen - 1;
+    }
+
+    for (int i = 0; i < copyLen; i++)
+    {
+        output[i] = body[start + i];
+    }
+    output[copyLen] = '\0';
+}
+
+void HandleAccessFailure(int client, bool strict, const char[] reason)
+{
+    if (strict && client > 0 && IsClientInGame(client))
+    {
+        KickClient(client, "验证服务不可用：%s", reason);
+    }
+    else if (client > 0)
+    {
+        LogError("Access re-check failed for %N: %s", client, reason);
+    }
+}
+
+public Action Timer_RetryAccessCheck(Handle timer, any userid)
 {
     int client = GetClientOfUserId(userid);
-    if (client == 0 || !IsClientInGame(client))
+    if (client == 0 || !IsClientInGame(client) || IsFakeClient(client))
+    {
         return Plugin_Stop;
+    }
 
-    PollVerificationResult(client);
+    SendAccessCheck(client, true);
     return Plugin_Stop;
 }
 
-void PollVerificationResult(int client)
-{
-    char steamId[64];
-    if (!GetClientAuthId(client, AuthId_SteamID64, steamId, sizeof(steamId))) return;
-
-    char query[512];
-    Format(query, sizeof(query), 
-        "SELECT status, steam_level, gokz_rating FROM zzzXBDJBans.player_cache WHERE steam_id = '%s'", 
-        steamId);
-    
-    g_hDatabase.Query(SQL_PollVerificationCallback, query, GetClientUserId(client));
-}
-
-public void SQL_PollVerificationCallback(Database db, DBResultSet results, const char[] error, any userid)
-{
-    int client = GetClientOfUserId(userid);
-    if (client == 0) return;
-
-    if (results == null)
-    {
-        LogError("Poll verification failed: %s", error);
-        KickClient(client, "验证错误：数据库查询失败");
-        return;
-    }
-
-    if (!results.FetchRow())
-    {
-        LogError("Verification record not found for player %N", client);
-        KickClient(client, "验证错误：记录不存在");
-        return;
-    }
-
-    char status[32];
-    results.FetchString(0, status, sizeof(status));
-    
-    if (StrEqual(status, "pending"))
-    {
-        // 后端还未处理，继续等待
-        LogMessage("Player %N data still pending. Waiting...", client);
-        CreateTimer(1.5, Timer_PollVerification, userid);
-        return;
-    }
-    
-    // 后端已获取数据 (status = 'verified')
-    int level = 0;
-    float rating = 0.0;
-    
-    if (!results.IsFieldNull(1))
-    {
-        level = results.FetchInt(1);
-    }
-    if (!results.IsFieldNull(2))
-    {
-        char ratingStr[32];
-        results.FetchString(2, ratingStr, sizeof(ratingStr));
-        rating = StringToFloat(ratingStr);
-    }
-
-    LogMessage("Player %N data received: Level=%d, Rating=%.2f", client, level, rating);
-    
-    // Step 4: 执行本地验证
-    PerformVerification(client, level, rating);
-}
-
-// ============================================
-// Step 4: 执行验证判断
-// ============================================
-
-void PerformVerification(int client, int level, float rating)
-{
-    char steamId[64];
-    GetClientAuthId(client, AuthId_SteamID64, steamId, sizeof(steamId));
-
-    bool passed = (rating >= REQUIRED_RATING && level >= REQUIRED_LEVEL);
-    char reason[256];
-
-    if (passed)
-    {
-        Format(reason, sizeof(reason), "验证通过：Rating %.2f / 等级 %d", rating, level);
-        LogMessage("Verification PASSED for %N: %s", client, reason);
-        
-        // 缓存通过的玩家
-        UpdateCacheStatus(steamId, "allowed", reason);
-        
-        CheckBansAndAdmin(client);
-    }
-    else
-    {
-        Format(reason, sizeof(reason), "验证失败：Rating %.2f(需>=%.1f) / 等级 %d(需>=%d)", 
-            rating, REQUIRED_RATING, level, REQUIRED_LEVEL);
-        LogMessage("Verification DENIED for %N: %s", client, reason);
-        
-        // 删除缓存，不保存失败记录
-        DeleteFromCache(steamId);
-        
-        KickClient(client, "%s", reason);
-    }
-}
-
-void UpdateCacheStatus(const char[] steamId, const char[] status, const char[] reason)
-{
-    char escapedReason[512];
-    g_hDatabase.Escape(reason, escapedReason, sizeof(escapedReason));
-    
-    char query[1024];
-    Format(query, sizeof(query), 
-        "UPDATE zzzXBDJBans.player_cache SET status = '%s', reason = '%s', updated_at = NOW() WHERE steam_id = '%s'",
-        status, escapedReason, steamId);
-    
-    g_hDatabase.Query(SQL_GenericCallback, query);
-}
-
-void DeleteFromCache(const char[] steamId)
-{
-    char query[256];
-    Format(query, sizeof(query), 
-        "DELETE FROM zzzXBDJBans.player_cache WHERE steam_id = '%s'",
-        steamId);
-    
-    g_hDatabase.Query(SQL_GenericCallback, query);
-}
-
-public void SQL_GenericCallback(Database db, DBResultSet results, const char[] error, any data)
-{
-    if (results == null)
-    {
-        LogError("SQL query failed: %s", error);
-    }
-}
-
-// ============================================
-// 封禁和管理员检查
-// ============================================
-
-void CheckBansAndAdmin(int client)
-{
-    char steamId[32];
-    char steamIdOther[32];
-    char ip[32];
-    char steamId64[64];
-    
-    GetClientAuthId(client, AuthId_SteamID64, steamId64, sizeof(steamId64));
-    GetClientAuthId(client, AuthId_Steam2, steamId, sizeof(steamId));
-    GetClientIP(client, ip, sizeof(ip));
-    
-    LogMessage("Checking bans for %N (SteamID: %s, IP: %s)", client, steamId64, ip);
-
-    strcopy(steamIdOther, sizeof(steamIdOther), steamId);
-    if (steamId[6] == '0') steamIdOther[6] = '1';
-    else if (steamId[6] == '1') steamIdOther[6] = '0';
-    
-    // 1. Check Bans
-    // Fetch ban_type (5) and steam_id_64 (6) from DB
-    char query[1024];
-    Format(query, sizeof(query), 
-        "SELECT id, reason, duration, expires_at, ip, ban_type, steam_id_64 FROM bans WHERE (steam_id_64 = '%s' OR steam_id = '%s' OR steam_id = '%s' OR ip = '%s') AND status = 'active' AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY id DESC LIMIT 1", 
-        steamId64, steamId, steamIdOther, ip);
-    
-    g_hDatabase.Query(SQL_CheckBanCallback, query, GetClientUserId(client));
-    
-    // 2. Sync Admin (Disabled per requirement: Web admins do not get in-game privileges)
-    // Format(query, sizeof(query), "SELECT role FROM admins WHERE steam_id_64 = '%s' OR steam_id = '%s' OR steam_id = '%s'", steamId64, steamId, steamIdOther);
-    // g_hDatabase.Query(SQL_CheckAdminCallback, query, GetClientUserId(client));
-}
-
-public void SQL_CheckBanCallback(Database db, DBResultSet results, const char[] error, any userid)
-{
-    int client = GetClientOfUserId(userid);
-    if (client == 0) return;
-    
-    if (results == null)
-    {
-        LogError("Ban check query failed: %s", error);
-        return;
-    }
-    
-    if (results.FetchRow())
-    {
-        int banId = results.FetchInt(0);
-        char reason[128];
-        char duration[32];
-        char storedIp[32];
-        char banType[32];
-        char bannedSteamId64[64];
-        
-        results.FetchString(1, reason, sizeof(reason));
-        results.FetchString(2, duration, sizeof(duration));
-        results.FetchString(4, storedIp, sizeof(storedIp));
-        results.FetchString(5, banType, sizeof(banType));
-        results.FetchString(6, bannedSteamId64, sizeof(bannedSteamId64));
-        
-        char clientSteamId64[64];
-        char clientIp[32];
-        GetClientAuthId(client, AuthId_SteamID64, clientSteamId64, sizeof(clientSteamId64));
-        GetClientIP(client, clientIp, sizeof(clientIp));
-
-        // 判断是否是本人 (SteamID 匹配)
-        bool isSameAccount = StrEqual(clientSteamId64, bannedSteamId64);
-
-        if (isSameAccount)
-        {
-            // Case A: 同账号匹配 (Direct Ban)
-            // 如果数据库中没有 IP 记录，更新为当前玩家 IP
-            if (storedIp[0] == '\0')
-            {
-                char updateQuery[256];
-                Format(updateQuery, sizeof(updateQuery), "UPDATE bans SET ip = '%s' WHERE id = %d", clientIp, banId);
-                g_hDatabase.Query(SQL_GenericCallback, updateQuery);
-                LogMessage("Updated missing IP for banned player %N (BanID: %d, IP: %s)", client, banId, clientIp);
-            }
-            // 踢出
-            KickClient(client, "您已被封禁。原因：%s（时长：%s）", reason, duration);
-            LogMessage("Kicked banned player: %N (Account Match, BanID: %d)", client, banId);
-        }
-        else
-        {
-            // Case B: 异账号匹配 (IP Match)
-            if (StrEqual(banType, "ip"))
-            {
-                // 是 IP 封禁 -> 连坐
-                LogMessage("IP Ban Match for %N! (Linked to BanID: %d, IP: %s)", client, banId, clientIp);
-
-                // 为当前马甲号创建新封禁
-                char newReason[256];
-                Format(newReason, sizeof(newReason), "同IP关联封禁 (Linked to %s)", bannedSteamId64);
-                
-                char insertQuery[1024];
-                Format(insertQuery, sizeof(insertQuery), 
-                    "INSERT INTO bans (name, steam_id, steam_id_64, ip, ban_type, reason, duration, admin_name, expires_at, created_at, status, server_id) SELECT '%N', 'PENDING', '%s', '%s', 'account', '%s', duration, 'System (IP Linked)', expires_at, NOW(), 'active', server_id FROM bans WHERE id = %d",
-                    client, clientSteamId64, clientIp, newReason, banId);
-                
-                g_hDatabase.Query(SQL_GenericCallback, insertQuery);
-
-                KickClient(client, "检测到关联封禁 IP。在此 IP 上的所有账号均被禁止进入。");
-            }
-            else
-            {
-                // 不是 IP 封禁 -> 放行
-                LogMessage("Player %N shares IP with banned player (BanID: %d) but BanType is '%s'. ALLOWING access.", client, banId, banType);
-                // 不执行 KickClient，直接返回
-            }
-        }
-    }
-}
-
-public void SQL_CheckAdminCallback(Database db, DBResultSet results, const char[] error, any userid)
-{
-    int client = GetClientOfUserId(userid);
-    if (client == 0) return;
-    
-    if (results == null)
-    {
-        LogError("Admin check query failed: %s", error);
-        return;
-    }
-    
-    if (results.FetchRow())
-    {
-        char role[32];
-        results.FetchString(0, role, sizeof(role));
-        
-        AdminId admin = CreateAdmin("TempAdmin");
-        if (StrEqual(role, "super_admin"))
-        {
-            admin.SetFlag(Admin_Root, true);
-        }
-        else if (StrEqual(role, "admin"))
-        {
-            admin.SetFlag(Admin_Generic, true);
-            admin.SetFlag(Admin_Kick, true);
-            admin.SetFlag(Admin_Ban, true);
-        }
-        
-        SetUserAdmin(client, admin, true);
-        LogMessage("Granted admin privileges to %N (%s)", client, role);
-    }
-}
-
-// ============================================
-// 定时检查封禁
-// ============================================
-
 public Action Timer_CheckBans(Handle timer)
 {
-    if (!g_hDatabase) return Plugin_Continue;
-    
     for (int i = 1; i <= MaxClients; i++)
     {
         if (IsClientInGame(i) && !IsFakeClient(i))
         {
-            CheckBansAndAdmin(i);
+            SendAccessCheck(i, false);
         }
     }
+
     return Plugin_Continue;
 }

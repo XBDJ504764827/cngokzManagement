@@ -1,92 +1,106 @@
-# zzzXBDJBans CSGO Plugin (SourceMod)
+# zzzXBDJBans CSGO Plugin
 
-![SourceMod](https://img.shields.io/badge/SourceMod-1.11%2B-black?style=for-the-badge&logo=counterstrike&logoColor=white)
-![CS:GO](https://img.shields.io/badge/CS:GO-Legacy-F7931E?style=for-the-badge&logo=steam&logoColor=white)
+zzzXBDJBans 的 CS:GO SourceMod 插件。
 
-zzzXBDJBans 的 CSGO 服务器端插件，基于 SourceMod 开发。作为连接游戏服务器与后端 API 的桥梁，负责实时验证玩家身份、同步管理员权限以及执行封禁操作。
+当前版本已经不再直接连接数据库。插件只负责把玩家和服务器信息发给后端 API，由后端统一完成白名单、验证缓存、GOKZ 阈值判定和封禁检查。
 
-## ✨ 功能特性
+## 当前架构
 
-- 🔒 **进服验证**：玩家连接时自动检查 SteamID、IP 和 Steam 等级/Rating。
-- 🚫 **封禁同步**：从后端数据库实时同步封禁信息，并在玩家违规时自动踢出。
-- 👮 **管理员同步**：自动授予后端配置的管理员权限（Flag）。
-- 📝 **白名单检查**：优先允许白名单内的玩家进入，支持自动放行与人工审核模式。
-- 💾 **本地缓存**：数据库连接失败时使用本地缓存（sqlite/flatfile）或内存缓存以保证服务可用性。
+- 插件通过 HTTP 调用后端 `POST /api/plugin/access-check`
+- 后端通过 `server_id` 区分具体游戏服，不依赖游戏服 IP 唯一
+- 同一台物理机上多开多个端口没有问题，但每个服都必须配置不同的 `zzzxbdjbans_server_id`
+- 插件定时复查在线玩家封禁状态
 
-## 🛠️ 依赖插件
+## 运行依赖
 
-本插件依赖以下 SourceMod 扩展/插件：
+- MetaMod:Source
+- SourceMod 1.11+
+- SteamWorks 扩展
 
-1. **SourceMod** (>= 1.11)
-2. **MetaMod:Source** (>= 1.11)
-3. **SteamWorks** (用于 HTTP 请求，或者使用内置的 Database 模块连接 MySQL)
-   - *注意：本项目目前主要使用 Database 模块直接连接 MySQL/MariaDB。*
+注意：
+- 没有 `SteamWorks` 扩展时，插件会在加载时失败
+- 插件已经不再使用 `configs/databases.cfg`
 
-## 📦 安装步骤
+## 配置项
 
-### 1. 准备文件
+插件启动后会生成 `cfg/sourcemod/zzzXBDJBans.cfg`。
 
-编译生成的插件文件位于 `addons/sourcemod/scripting/compiled/zzzXBDJBans.smx`。
+| ConVar | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `zzzxbdjbans_server_id` | `1` | 当前游戏服对应的后端 `servers.id` |
+| `zzzxbdjbans_api_url` | `http://127.0.0.1:3000/api/plugin/access-check` | 后端插件鉴权接口地址 |
+| `zzzxbdjbans_api_token` | 空 | 与后端 `PLUGIN_API_TOKEN` 一致的共享令牌 |
+| `zzzxbdjbans_api_timeout` | `10` | HTTP 超时秒数 |
 
-### 2. 上传文件
+## 多服部署
 
-将 `zzzXBDJBans.smx` 上传到服务器的 `csgo/addons/sourcemod/plugins/` 目录。
+如果一个社区在同一台服务器上开多个游戏服：
 
-### 3. 配置数据库连接
+- 每个游戏服都配置自己的 `zzzxbdjbans_server_id`
+- 每个 `server_id` 都应在后端 `servers` 表中有唯一记录
+- 即使多个游戏服共用同一个公网 IP，只要 `server_id` 不同，后端就能分辨
 
-编辑服务器上的 `csgo/addons/sourcemod/configs/databases.cfg` 文件，添加 `zzzXBDJBans` 数据库配置：
+推荐做法：
+- 服务器 A `27015` 使用 `zzzxbdjbans_server_id 1`
+- 服务器 A `27016` 使用 `zzzxbdjbans_server_id 2`
+- 服务器 A `27017` 使用 `zzzxbdjbans_server_id 3`
+
+## 安装
+
+1. 把插件文件放到游戏服：
+
+```text
+csgo/addons/sourcemod/plugins/zzzXBDJBans.smx
+```
+
+2. 确保游戏服已安装 `SteamWorks` 扩展。
+
+3. 编辑配置文件：
 
 ```cfg
-"zzzXBDJBans"
-{
-    "driver"    "mysql"
-    "host"      "your_mysql_host"
-    "database"  "zzzXBDJBans"
-    "user"      "your_db_user"
-    "pass"      "your_db_password"
-    //"port"    "3306"
-}
+sm_cvar zzzxbdjbans_server_id 1
+sm_cvar zzzxbdjbans_api_url "http://127.0.0.1:3000/api/plugin/access-check"
+sm_cvar zzzxbdjbans_api_token "replace_with_real_token"
 ```
 
-### 4. 加载插件
+4. 重载插件或重启服务器。
 
-在服务器控制台执行：
+## 编译
+
+当前项目使用的 `spcomp` 路径：
+
+```text
+/home/xbdj/cngokzManagement/sourcemod-1.11.0-git6970-linux/addons/sourcemod/scripting/spcomp
+```
+
+编译命令：
 
 ```bash
-sm plugins load zzzXBDJBans
+cd /home/xbdj/cngokzManagement/zzzXBDJBansCsgoInprop/csgo/addons/sourcemod/scripting
+/home/xbdj/cngokzManagement/sourcemod-1.11.0-git6970-linux/addons/sourcemod/scripting/spcomp zzzXBDJBans.sp
 ```
-或者重启服务器。
 
-## ⚙️ 配置说明 (CVARs)
+编译成功后会生成：
 
-插件会自动创建配置文件 `cfg/sourcemod/zzzXBDJBans.cfg`（首次运行后）。
+```text
+csgo/addons/sourcemod/scripting/zzzXBDJBans.smx
+```
 
-| CVAR | 默认值 | 描述 |
-| :--- | :--- | :--- |
-| `zzzxbdjbans_server_id` | `1` | 服务器 ID (对应后端数据库中 `servers` 表的 ID) |
-| `zzzxbdjbans_check_interval` | `60.0` | 定时检查封禁状态的间隔 (秒) |
+部署时请把它复制到：
 
-## 🔨 编译指南
+```text
+csgo/addons/sourcemod/plugins/zzzXBDJBans.smx
+```
 
-如果您需要修改插件源码，请按以下步骤编译：
+## 维护要点
 
-1. 确保已安装 SourceMod 编译器 (`spcomp`)。
-2. 进入 `scripting` 目录。
-3. 运行编译脚本：
+- 修改后端地址只需要改 `zzzxbdjbans_api_url`，不需要重新编译
+- 修改令牌时，后端 `PLUGIN_API_TOKEN` 和插件 `zzzxbdjbans_api_token` 必须同时更新
+- 若玩家进服一直处于验证中，优先检查后端 worker 是否正常处理 `player_cache`
+- 若插件加载失败，优先检查 `SteamWorks` 扩展是否已安装
 
-   **Linux/Mac**:
-   ```bash
-   chmod +x compile.sh
-   ./compile.sh zzzXBDJBans.sp
-   ```
+## 源码位置
 
-   **Windows**:
-   将 `zzzXBDJBans.sp` 拖拽到 `spcomp.exe` 上。
-
-## 🤝 贡献
-
-欢迎提交 Pull Request 或 Issue 来改进本项目。
-
-## 📄 许可证
-
-[MIT License](LICENSE)
+- 插件源码：`csgo/addons/sourcemod/scripting/zzzXBDJBans.sp`
+- 最小 SteamWorks include：`csgo/addons/sourcemod/scripting/SteamWorks.inc`
+- 编译产物：`csgo/addons/sourcemod/plugins/zzzXBDJBans.smx`

@@ -56,6 +56,7 @@ mod services;
         handlers::server::ban_player,
         handlers::log::list_logs,
         handlers::log::create_log,
+        handlers::plugin::access_check,
         handlers::verification::list_verifications,
         handlers::verification::create_verification,
         handlers::verification::update_verification,
@@ -90,6 +91,7 @@ mod services;
             handlers::server::BanPlayerRequest,
             models::log::AuditLog,
             models::log::CreateLogRequest,
+            handlers::plugin::PluginAccessRequest,
             handlers::verification::VerificationRecord,
             handlers::verification::CreateVerificationRequest,
             handlers::verification::UpdateVerificationRequest,
@@ -235,6 +237,7 @@ async fn main() {
         .route("/api/whitelist/public-list", get(handlers::whitelist::list_public_whitelist))
         .route("/api/whitelist/player-info", get(handlers::whitelist::get_player_info))
         .route("/api/bans/public", get(handlers::ban::list_public_bans))
+        .route("/api/plugin/access-check", post(handlers::plugin::access_check))
         .merge(protected_routes)
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())

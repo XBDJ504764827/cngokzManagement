@@ -1,102 +1,155 @@
-# zzzXBDJBans Backend API (Rust)
+# zzzXBDJBans Backend
 
-![Rust](https://img.shields.io/badge/Rust-1.80%2B-000000?style=for-the-badge&logo=rust&logoColor=white)
-![Axum](https://img.shields.io/badge/Axum-0.7-FF5722?style=for-the-badge&logo=rust&logoColor=white)
-![SQLx](https://img.shields.io/badge/SQLx-0.8-336791?style=for-the-badge&logo=postgresql&logoColor=white)
+zzzXBDJBans 的 Rust 后端服务。
 
-zzzXBDJBans 的核心后端服务，使用 Rust 编写，基于 Axum 框架构建。为前端管理界面和 CSGO 插件提供高性能的 RESTful API 支持，处理封禁、验证和数据存储。
+它同时服务两个调用方：
 
-## ✨ 技术栈
+- Web 管理后台
+- CS:GO SourceMod 插件
 
-- **Web 框架**: Axum (基于 Tokio)
-- **数据库 ORM**: SQLx (异步、类型安全)
-- **数据库**: PostgreSQL
-- **缓存**: Redis (用于会话管理和临时数据)
-- **文档**: Utoipa (Swagger UI)
+当前插件侧已经改为 API 通信模式，插件不再直接访问数据库。
 
-## 🛠️ 环境要求
+## 主要职责
 
-- **Rust**: 推荐使用最新 Stable 版本 (`rustup update`)
-- **PostgreSQL**: >= 14
-- **Redis**: >= 6.0
-- **SQLx CLI**:用于数据库迁移 (`cargo install sqlx-cli`)
+- 管理管理员、封禁、白名单、服务器信息和审计日志
+- 提供 Web 后台使用的管理 API
+- 提供游戏服插件使用的 `POST /api/plugin/access-check`
+- 后台异步处理 `player_cache` 和 `player_verifications` 验证任务
 
-## 🚀 快速开始
+## 技术栈
 
-### 1. 配置数据库
+- Rust
+- Axum
+- SQLx
+- PostgreSQL
+- Reqwest
+- Utoipa
 
-首先创建数据库 `zzzXBDJBans`。
+## 关键接口
 
-项目包含数据库迁移脚本，位于 `migrations` 目录。请使用 SQLx CLI 运行迁移：
+### Web 侧
 
-```bash
-# 设置数据库连接 URL (替换为您的实际配置)
-export DATABASE_URL="postgres://user:password@localhost:5432/zzzXBDJBans"
+- `/api/auth/*`
+- `/api/bans/*`
+- `/api/whitelist/*`
+- `/api/servers/*`
+- `/api/logs`
 
-# 运行迁移
-sqlx migrate run
+### 插件侧
+
+- `POST /api/plugin/access-check`
+
+插件接口使用表单提交，必须带请求头：
+
+```text
+X-Plugin-Token: <PLUGIN_API_TOKEN>
 ```
 
-### 2. 配置环境变量
+请求字段：
 
-复制 `.env.example` 为 `.env` 并根据环境修改：
+- `server_id`
+- `steam_id_64`
+- `steam_id`
+- `player_name`
+- `ip_address`
 
-```bash
-cp .env.example .env
+返回是纯文本键值对，当前格式为：
+
+```text
+action=allow|pending|deny
+retry_after=2
+message=...
 ```
 
-**配置项示例**:
+## 环境变量
+
+最少需要配置：
 
 ```ini
-DATABASE_URL=postgres://root:password@localhost:5432/zzzXBDJBans
-REDIS_URL=redis://127.0.0.1:6379/
-RUST_LOG=info,zzzXBDJBansBackend=debug
+DATABASE_URL=postgres://user:password@localhost:5432/zzzXBDJBans
+JWT_SECRET=replace_me
+STEAM_API_KEY=replace_me
+PLUGIN_API_TOKEN=replace_me
 SERVER_HOST=0.0.0.0
-SERVER_PORT=8080
-STEAM_API_KEY=your_steam_web_api_key
+SERVER_PORT=3000
 ```
 
-### 3. 构建与运行
+可选配置：
 
-开发模式运行（支持热重载需安装 `cargo-watch`）：
+```ini
+PLUGIN_REQUIRED_RATING=3.0
+PLUGIN_REQUIRED_LEVEL=1
+RUST_LOG=info
+```
+
+说明：
+
+- `PLUGIN_API_TOKEN` 用于插件与后端之间的共享鉴权
+- `PLUGIN_REQUIRED_RATING` 和 `PLUGIN_REQUIRED_LEVEL` 用于插件进服验证阈值
+
+## 本地运行
 
 ```bash
+cd /home/xbdj/cngokzManagement/zzzXBDJBansBackend
 cargo run
 ```
 
-或者构建发布版本：
+## 数据库与迁移
+
+迁移目录：
+
+```text
+zzzXBDJBansBackend/migrations
+```
+
+后端启动时会自动尝试：
+
+- 连接数据库
+- 创建数据库
+- 执行迁移
+
+即使如此，维护时仍建议先确认：
+
+- `DATABASE_URL` 正确
+- PostgreSQL 可连接
+- 迁移没有脏状态
+
+## 与插件的关系
+
+当前插件接入流程：
+
+1. 游戏服插件读取 `zzzxbdjbans_server_id`
+2. 插件请求 `/api/plugin/access-check`
+3. 后端按 `servers.id` 查找服务器配置
+4. 后端检查白名单、验证缓存和封禁状态
+5. 后端返回 `allow`、`pending` 或 `deny`
+
+这意味着：
+
+- 同一 IP 下多开多个游戏服是支持的
+- 关键不是 IP，而是每个游戏服都要配置正确的 `server_id`
+
+## 维护建议
+
+- 修改插件接口返回格式前，必须同步修改 SourceMod 插件解析逻辑
+- 修改 `PLUGIN_API_TOKEN` 时，需要同步更新所有游戏服配置
+- 如果插件反馈一直 `pending`，先检查 `services/verification_worker.rs`
+- 如果多服部署，请优先核对 `servers` 表和每台服的 `server_id`
+
+## 重要源码位置
+
+- 路由入口：`src/main.rs`
+- 插件接口：`src/handlers/plugin.rs`
+- 服务器管理：`src/handlers/server.rs`
+- 封禁逻辑：`src/handlers/ban.rs`
+- 白名单逻辑：`src/handlers/whitelist.rs`
+- 验证 worker：`src/services/verification_worker.rs`
+
+## 检查命令
+
+开发时最常用：
 
 ```bash
-cargo build --release
-./target/release/zzzXBDJBansBackend
+cd /home/xbdj/cngokzManagement/zzzXBDJBansBackend
+cargo check
 ```
-
-## 📚 API 文档
-
-后端启动后，访问 `/swagger-ui/` 即可查看完整的 Swagger API 文档和测试接口。
-
-例如：`http://localhost:8080/swagger-ui/`
-
-## 📂 目录结构
-
-```
-zzzXBDJBansBackend/
-├── src/
-│   ├── handlers/      # API 路由处理函数
-│   ├── models/        # 数据模型 (Structs)
-│   ├── services/      # 业务逻辑层
-│   ├── db/            # 数据库连接与操作
-│   ├── main.rs        # 程序入口
-│   └── lib.rs         # 库入口
-├── migrations/        # SQLx 数据库迁移文件
-├── Cargo.toml         # Rust 依赖配置
-└── .env               # 环境配置
-```
-
-## 🤝 贡献
-
-欢迎提交 Pull Request 或 Issue 来改进本项目。
-
-## 📄 许可证
-
-[MIT License](LICENSE)
