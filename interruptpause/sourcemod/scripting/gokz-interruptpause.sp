@@ -5,7 +5,7 @@
 #include <sdktools>
 #include <entity_prop_stocks>
 #include <dbi>
-#include "../../../zzzXBDJBansCsgoInprop/csgo/addons/sourcemod/scripting/SteamWorks.inc"
+#include "SteamWorks.inc"
 #include <movement>
 #include <gokz/core>
 #include <gokz/hud>
@@ -127,6 +127,7 @@ public void OnPluginStart()
 	gCV_InterruptPauseApiBaseUrl = CreateConVar("sm_interruptpause_api_base_url", "http://127.0.0.1:3000/api/plugin/interrupt-pause", "Base URL for interruptpause backend API.");
 	gCV_InterruptPauseApiToken = CreateConVar("sm_interruptpause_api_token", "", "Plugin token for interruptpause backend API.");
 	gCV_InterruptPauseApiTimeout = CreateConVar("sm_interruptpause_api_timeout", "10", "Interruptpause HTTP timeout in seconds.", _, true, 3.0, true, 30.0);
+	AutoExecConfig(true, "gokz-interruptpause");
 	HookEvent("player_disconnect", Event_PlayerDisconnect, EventHookMode_Pre);
 	HookEvent("player_team", Event_PlayerTeam, EventHookMode_Post);
 	HookEvent("player_spawn", Event_PlayerSpawn, EventHookMode_Post);

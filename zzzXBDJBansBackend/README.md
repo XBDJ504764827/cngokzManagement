@@ -12,8 +12,10 @@ zzzXBDJBans 的 Rust 后端服务。
 ## 主要职责
 
 - 管理管理员、封禁、白名单、服务器信息和审计日志
+- 管理中断暂停快照和恢复授权
 - 提供 Web 后台使用的管理 API
 - 提供游戏服插件使用的 `POST /api/plugin/access-check`
+- 提供游戏服 `interruptpause` 插件使用的中断暂停 API
 - 后台异步处理 `player_cache` 和 `player_verifications` 验证任务
 
 ## 技术栈
@@ -34,10 +36,17 @@ zzzXBDJBans 的 Rust 后端服务。
 - `/api/whitelist/*`
 - `/api/servers/*`
 - `/api/logs`
+- `/api/interrupt-pause/*`
 
 ### 插件侧
 
 - `POST /api/plugin/access-check`
+- `POST /api/plugin/interrupt-pause/save`
+- `POST /api/plugin/interrupt-pause/peek`
+- `POST /api/plugin/interrupt-pause/request-restore`
+- `POST /api/plugin/interrupt-pause/fetch-approved`
+- `POST /api/plugin/interrupt-pause/complete-restore`
+- `POST /api/plugin/interrupt-pause/abort`
 
 插件接口使用表单提交，必须带请求头：
 
