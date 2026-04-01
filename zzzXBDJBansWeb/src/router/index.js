@@ -50,6 +50,11 @@ const router = createRouter({
                     component: () => import('../views/admin/AdminList.vue')
                 },
                 {
+                    path: 'interrupt-pause',
+                    name: 'interrupt-pause',
+                    component: () => import('../views/admin/InterruptPauseManagement.vue')
+                },
+                {
                     path: 'logs',
                     name: 'logs',
                     component: () => import('../views/admin/AuditLog.vue'),

@@ -34,6 +34,15 @@ mod services;
         handlers::ban::create_ban,
         handlers::ban::update_ban,
         handlers::ban::delete_ban,
+        handlers::interrupt_pause::list_interrupt_pause_snapshots,
+        handlers::interrupt_pause::approve_interrupt_pause_snapshot,
+        handlers::interrupt_pause::reject_interrupt_pause_snapshot,
+        handlers::interrupt_pause::save_interrupt_pause_snapshot,
+        handlers::interrupt_pause::peek_interrupt_pause_snapshot,
+        handlers::interrupt_pause::request_interrupt_pause_restore,
+        handlers::interrupt_pause::fetch_approved_interrupt_pause_snapshot,
+        handlers::interrupt_pause::complete_interrupt_pause_restore,
+        handlers::interrupt_pause::abort_interrupt_pause_snapshot,
         handlers::whitelist::list_whitelist,
         handlers::whitelist::list_pending,
         handlers::whitelist::list_rejected,
@@ -75,6 +84,10 @@ mod services;
             models::ban::CreateBanRequest,
             models::ban::CreateBanRequest,
             models::ban::UpdateBanRequest,
+            models::interrupt_pause::InterruptPauseSnapshot,
+            models::interrupt_pause::RejectInterruptPauseRequest,
+            models::interrupt_pause::PluginInterruptPauseSaveRequest,
+            models::interrupt_pause::PluginInterruptPauseLookupRequest,
             models::whitelist::Whitelist,
             models::whitelist::CreateWhitelistRequest,
             models::whitelist::ApplyWhitelistRequest,
@@ -200,6 +213,10 @@ async fn main() {
         .route("/api/check_global_ban/bulk", post(handlers::ban::check_global_ban_bulk))
         // Logs
         .route("/api/logs", get(handlers::log::list_logs).post(handlers::log::create_log))
+        // Interrupt Pause
+        .route("/api/interrupt-pause", get(handlers::interrupt_pause::list_interrupt_pause_snapshots))
+        .route("/api/interrupt-pause/:id/approve", axum::routing::put(handlers::interrupt_pause::approve_interrupt_pause_snapshot))
+        .route("/api/interrupt-pause/:id/reject", axum::routing::put(handlers::interrupt_pause::reject_interrupt_pause_snapshot))
 
         // Whitelist (管理员操作)
         .route("/api/whitelist", get(handlers::whitelist::list_whitelist).post(handlers::whitelist::create_whitelist))
@@ -238,6 +255,12 @@ async fn main() {
         .route("/api/whitelist/player-info", get(handlers::whitelist::get_player_info))
         .route("/api/bans/public", get(handlers::ban::list_public_bans))
         .route("/api/plugin/access-check", post(handlers::plugin::access_check))
+        .route("/api/plugin/interrupt-pause/save", post(handlers::interrupt_pause::save_interrupt_pause_snapshot))
+        .route("/api/plugin/interrupt-pause/peek", post(handlers::interrupt_pause::peek_interrupt_pause_snapshot))
+        .route("/api/plugin/interrupt-pause/request-restore", post(handlers::interrupt_pause::request_interrupt_pause_restore))
+        .route("/api/plugin/interrupt-pause/fetch-approved", post(handlers::interrupt_pause::fetch_approved_interrupt_pause_snapshot))
+        .route("/api/plugin/interrupt-pause/complete-restore", post(handlers::interrupt_pause::complete_interrupt_pause_restore))
+        .route("/api/plugin/interrupt-pause/abort", post(handlers::interrupt_pause::abort_interrupt_pause_snapshot))
         .merge(protected_routes)
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())

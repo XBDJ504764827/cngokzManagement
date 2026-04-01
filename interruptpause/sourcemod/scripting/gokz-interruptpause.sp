@@ -5,6 +5,7 @@
 #include <sdktools>
 #include <entity_prop_stocks>
 #include <dbi>
+#include "../../../zzzXBDJBansCsgoInprop/csgo/addons/sourcemod/scripting/SteamWorks.inc"
 #include <movement>
 #include <gokz/core>
 #include <gokz/hud>
@@ -29,8 +30,24 @@
 #define RUN_MONITOR_INTERVAL_SECONDS 1.0
 #define PERIODIC_SNAPSHOT_INTERVAL_SECONDS 30.0
 #define AIRBORNE_DISCONNECT_PENALTY_SECONDS 15.0
+#define INTERRUPT_API_URL_MAX 256
+#define INTERRUPT_API_TOKEN_MAX 128
+#define INTERRUPT_RESPONSE_MAX 32768
+#define INTERRUPT_REFRESH_INTERVAL_SECONDS 15.0
+
+enum InterruptRestoreState
+{
+	InterruptRestoreState_None = 0,
+	InterruptRestoreState_Pending,
+	InterruptRestoreState_Approved,
+	InterruptRestoreState_Rejected
+}
 
 ConVar gCV_InterruptPauseDebug;
+ConVar gCV_InterruptPauseServerId;
+ConVar gCV_InterruptPauseApiBaseUrl;
+ConVar gCV_InterruptPauseApiToken;
+ConVar gCV_InterruptPauseApiTimeout;
 Database gDB = null;
 Handle gH_RunMonitorTimer = null;
 int gI_DuckSpeedBaseOffset = -1;
@@ -45,7 +62,11 @@ bool gB_HasSafeSnapshot[MAXPLAYERS + 1];
 float gF_PendingInterruptTime[MAXPLAYERS + 1];
 float gF_NextPeriodicSnapshotAt[MAXPLAYERS + 1];
 char gS_PendingInterruptMap[MAXPLAYERS + 1][PLATFORM_MAX_PATH];
+char gS_PendingInterruptRejectReason[MAXPLAYERS + 1][192];
 bool gB_PendingInterruptMapMatches[MAXPLAYERS + 1];
+bool gB_PendingInterruptLookupInFlight[MAXPLAYERS + 1];
+bool gB_PendingInterruptRestoreFetchInFlight[MAXPLAYERS + 1];
+InterruptRestoreState gI_PendingInterruptRestoreState[MAXPLAYERS + 1];
 int gI_LastObservedCheckpointCount[MAXPLAYERS + 1];
 Handle gH_PendingInterruptMenuTimer[MAXPLAYERS + 1];
 Handle gH_PendingInterruptRefreshTimer[MAXPLAYERS + 1];
@@ -101,10 +122,11 @@ InterruptSnapshot gSafeSnapshots[MAXPLAYERS + 1];
 public void OnPluginStart()
 {
 	gCV_InterruptPauseDebug = CreateConVar("sm_interruptpause_debug", "0", "Enable interruptpause debug logging.", FCVAR_NONE, true, 0.0, true, 1.0);
-	if (!InitDatabase())
-	{
-		SetFailState("Failed to initialize SQLite database for interruptpause.");
-	}
+	ValidateSteamWorksSupport();
+	gCV_InterruptPauseServerId = CreateConVar("sm_interruptpause_server_id", "1", "Server ID used by interruptpause backend APIs.");
+	gCV_InterruptPauseApiBaseUrl = CreateConVar("sm_interruptpause_api_base_url", "http://127.0.0.1:3000/api/plugin/interrupt-pause", "Base URL for interruptpause backend API.");
+	gCV_InterruptPauseApiToken = CreateConVar("sm_interruptpause_api_token", "", "Plugin token for interruptpause backend API.");
+	gCV_InterruptPauseApiTimeout = CreateConVar("sm_interruptpause_api_timeout", "10", "Interruptpause HTTP timeout in seconds.", _, true, 3.0, true, 30.0);
 	HookEvent("player_disconnect", Event_PlayerDisconnect, EventHookMode_Pre);
 	HookEvent("player_team", Event_PlayerTeam, EventHookMode_Post);
 	HookEvent("player_spawn", Event_PlayerSpawn, EventHookMode_Post);
@@ -155,6 +177,16 @@ public void OnPluginEnd()
 	{
 		delete gDB;
 		gDB = null;
+	}
+}
+
+void ValidateSteamWorksSupport()
+{
+	if (GetFeatureStatus(FeatureType_Native, "SteamWorks_CreateHTTPRequest") != FeatureStatus_Available
+		|| GetFeatureStatus(FeatureType_Native, "SteamWorks_SetHTTPCallbacks") != FeatureStatus_Available
+		|| GetFeatureStatus(FeatureType_Native, "SteamWorks_SendHTTPRequest") != FeatureStatus_Available)
+	{
+		SetFailState("SteamWorks extension is required for interruptpause backend API mode.");
 	}
 }
 
@@ -268,7 +300,11 @@ void ResetPendingInterruptState(int client)
 	gB_PendingInterruptMenuDisplayed[client] = false;
 	gF_PendingInterruptTime[client] = 0.0;
 	gS_PendingInterruptMap[client][0] = '\0';
+	gS_PendingInterruptRejectReason[client][0] = '\0';
 	gB_PendingInterruptMapMatches[client] = false;
+	gB_PendingInterruptLookupInFlight[client] = false;
+	gB_PendingInterruptRestoreFetchInFlight[client] = false;
+	gI_PendingInterruptRestoreState[client] = InterruptRestoreState_None;
 
 	if (gH_PendingInterruptMenuTimer[client] != null)
 	{
@@ -297,6 +333,196 @@ void ResetRunMonitorState(int client)
 	gI_LastObservedCheckpointCount[client] = 0;
 	CleanupSnapshot(gSafeSnapshots[client]);
 	InitializeSnapshot(gSafeSnapshots[client]);
+}
+
+Handle CreateInterruptPauseRequest(int client, const char[] endpoint)
+{
+	if (client <= 0 || client > MaxClients)
+	{
+		return null;
+	}
+
+	char apiBase[INTERRUPT_API_URL_MAX];
+	char apiToken[INTERRUPT_API_TOKEN_MAX];
+	char url[INTERRUPT_API_URL_MAX];
+	char serverId[16];
+	char authPrimary[MAX_AUTHID_LENGTH];
+	char authSteamId64[MAX_AUTHID_LENGTH];
+	char authSteam3[MAX_AUTHID_LENGTH];
+	char authSteam2[MAX_AUTHID_LENGTH];
+	char authEngine[MAX_AUTHID_LENGTH];
+
+	gCV_InterruptPauseApiBaseUrl.GetString(apiBase, sizeof(apiBase));
+	gCV_InterruptPauseApiToken.GetString(apiToken, sizeof(apiToken));
+	TrimString(apiBase);
+	TrimString(apiToken);
+
+	if (apiBase[0] == '\0' || apiToken[0] == '\0')
+	{
+		DebugLog("interrupt api config missing for client=%N endpoint=%s", client, endpoint);
+		return null;
+	}
+
+	if (!ResolvePrimaryAuth(client, authPrimary, sizeof(authPrimary)))
+	{
+		DebugLog("interrupt api primary auth missing for client=%N endpoint=%s", client, endpoint);
+		return null;
+	}
+
+	authSteamId64[0] = '\0';
+	authSteam3[0] = '\0';
+	authSteam2[0] = '\0';
+	authEngine[0] = '\0';
+	GetClientAuthId(client, AuthId_SteamID64, authSteamId64, sizeof(authSteamId64));
+	GetClientAuthId(client, AuthId_Steam3, authSteam3, sizeof(authSteam3));
+	GetClientAuthId(client, AuthId_Steam2, authSteam2, sizeof(authSteam2));
+	GetClientAuthId(client, AuthId_Engine, authEngine, sizeof(authEngine));
+
+	if (apiBase[strlen(apiBase) - 1] == '/')
+	{
+		Format(url, sizeof(url), "%s%s", apiBase, endpoint);
+	}
+	else
+	{
+		Format(url, sizeof(url), "%s/%s", apiBase, endpoint);
+	}
+
+	Handle request = SteamWorks_CreateHTTPRequest(k_EHTTPMethodPOST, url);
+	if (request == null)
+	{
+		DebugLog("interrupt api request create failed for client=%N endpoint=%s", client, endpoint);
+		return null;
+	}
+
+	IntToString(gCV_InterruptPauseServerId.IntValue, serverId, sizeof(serverId));
+	SteamWorks_SetHTTPRequestNetworkActivityTimeout(request, gCV_InterruptPauseApiTimeout.IntValue);
+	SteamWorks_SetHTTPRequestHeaderValue(request, "X-Plugin-Token", apiToken);
+	SteamWorks_SetHTTPRequestHeaderValue(request, "Content-Type", "application/x-www-form-urlencoded");
+	SteamWorks_SetHTTPRequestGetOrPostParameter(request, "server_id", serverId);
+	SteamWorks_SetHTTPRequestGetOrPostParameter(request, "auth_primary", authPrimary);
+	SteamWorks_SetHTTPRequestGetOrPostParameter(request, "auth_steamid64", authSteamId64);
+	SteamWorks_SetHTTPRequestGetOrPostParameter(request, "auth_steam3", authSteam3);
+	SteamWorks_SetHTTPRequestGetOrPostParameter(request, "auth_steam2", authSteam2);
+	SteamWorks_SetHTTPRequestGetOrPostParameter(request, "auth_engine", authEngine);
+	return request;
+}
+
+bool SendInterruptPauseRequest(Handle request, SteamWorksHTTPRequestCompleted callback, int client)
+{
+	if (request == null)
+	{
+		return false;
+	}
+
+	SteamWorks_SetHTTPRequestContextValue(request, GetClientUserId(client));
+	SteamWorks_SetHTTPCallbacks(request, callback);
+	if (!SteamWorks_SendHTTPRequest(request))
+	{
+		CloseHandle(request);
+		return false;
+	}
+
+	return true;
+}
+
+void ReadInterruptPauseResponseBody(Handle request, char[] body, int bodyLen)
+{
+	int size = 0;
+	if (!SteamWorks_GetHTTPResponseBodySize(request, size) || size <= 0)
+	{
+		body[0] = '\0';
+		return;
+	}
+
+	if (size >= bodyLen)
+	{
+		size = bodyLen - 1;
+	}
+
+	if (!SteamWorks_GetHTTPResponseBodyData(request, body, size))
+	{
+		body[0] = '\0';
+		return;
+	}
+
+	body[size] = '\0';
+}
+
+void ExtractInterruptPauseResponseValue(const char[] body, const char[] key, char[] output, int outputLen)
+{
+	output[0] = '\0';
+
+	int start = StrContains(body, key);
+	if (start == -1)
+	{
+		return;
+	}
+
+	start += strlen(key);
+
+	int bodyLen = strlen(body);
+	int end = start;
+	while (end < bodyLen && body[end] != '\n' && body[end] != '\r')
+	{
+		end++;
+	}
+
+	int copyLen = end - start;
+	if (copyLen <= 0)
+	{
+		return;
+	}
+
+	if (copyLen >= outputLen)
+	{
+		copyLen = outputLen - 1;
+	}
+
+	for (int i = 0; i < copyLen; i++)
+	{
+		output[i] = body[start + i];
+	}
+	output[copyLen] = '\0';
+}
+
+InterruptRestoreState ParseInterruptRestoreState(const char[] status)
+{
+	if (StrEqual(status, "pending"))
+	{
+		return InterruptRestoreState_Pending;
+	}
+	if (StrEqual(status, "approved"))
+	{
+		return InterruptRestoreState_Approved;
+	}
+	if (StrEqual(status, "rejected"))
+	{
+		return InterruptRestoreState_Rejected;
+	}
+	return InterruptRestoreState_None;
+}
+
+bool RequestPendingInterruptStateRefresh(int client)
+{
+	if (client <= 0 || client > MaxClients || !IsClientInGame(client) || IsFakeClient(client) || !gB_CanRestoreThisConnection[client] || gB_PendingInterruptLookupInFlight[client])
+	{
+		return false;
+	}
+
+	Handle request = CreateInterruptPauseRequest(client, "peek");
+	if (request == null)
+	{
+		return false;
+	}
+
+	gB_PendingInterruptLookupInFlight[client] = true;
+	if (!SendInterruptPauseRequest(request, OnPeekInterruptPauseSnapshotCompleted, client))
+	{
+		gB_PendingInterruptLookupInFlight[client] = false;
+		return false;
+	}
+
+	return true;
 }
 
 public Action Timer_RunMonitor(Handle timer, any data)
@@ -444,53 +670,13 @@ public Action Timer_RefreshPendingInterruptState(Handle timer, any userid)
 		gH_PendingInterruptRefreshTimer[client] = null;
 	}
 
-	RefreshPendingInterruptState(client);
+	RequestPendingInterruptStateRefresh(client);
 	return Plugin_Stop;
 }
 
 void RefreshPendingInterruptState(int client)
 {
-	if (client <= 0 || client > MaxClients || !IsClientInGame(client) || IsFakeClient(client) || !gB_CanRestoreThisConnection[client])
-	{
-		return;
-	}
-
-	InterruptSnapshot snapshot;
-	if (!ReadSnapshot(client, snapshot))
-	{
-		CleanupSnapshot(snapshot);
-		if (CanResolveAnyClientAuth(client))
-		{
-			ResetPendingInterruptState(client);
-		}
-		return;
-	}
-
-	if (!ValidateSnapshotIpForRestore(client, snapshot, true))
-	{
-		CleanupSnapshot(snapshot);
-		ResetPendingInterruptState(client);
-		return;
-	}
-
-	char currentMap[PLATFORM_MAX_PATH];
-	GetCurrentMap(currentMap, sizeof(currentMap));
-	if (!StrEqual(currentMap, snapshot.map, false))
-	{
-		CleanupSnapshot(snapshot);
-		return;
-	}
-
-	gB_HasPendingInterrupt[client] = true;
-	gF_PendingInterruptTime[client] = snapshot.time;
-	strcopy(gS_PendingInterruptMap[client], sizeof(gS_PendingInterruptMap[]), snapshot.map);
-	gB_PendingInterruptMapMatches[client] = true;
-
-	if (CanDisplayPendingInterruptMenu(client))
-	{
-		SchedulePendingInterruptMenu(client, 0.5);
-	}
-	CleanupSnapshot(snapshot);
+	RequestPendingInterruptStateRefresh(client);
 }
 
 void SchedulePendingInterruptMenu(int client, float delay)
@@ -544,7 +730,9 @@ void ShowPendingInterruptMenu(int client)
 	}
 
 	char timeText[64];
-	char title[256];
+	char title[384];
+	char requestLabel[64];
+	int requestDraw = gB_PendingInterruptMapMatches[client] ? ITEMDRAW_DEFAULT : ITEMDRAW_DISABLED;
 	FormatRunTime(gF_PendingInterruptTime[client], timeText, sizeof(timeText));
 
 	if (gB_PendingInterruptMapMatches[client])
@@ -556,13 +744,44 @@ void ShowPendingInterruptMenu(int client)
 		Format(title, sizeof(title), "中断计时\n \n时间: %s\n存档地图: %s\n当前地图不可恢复\n ", timeText, gS_PendingInterruptMap[client]);
 	}
 
+	switch (gI_PendingInterruptRestoreState[client])
+	{
+		case InterruptRestoreState_Pending:
+		{
+			StrCat(title, sizeof(title), "审核状态: 待审核\n");
+			strcopy(requestLabel, sizeof(requestLabel), "恢复申请审核中");
+			requestDraw = ITEMDRAW_DISABLED;
+		}
+		case InterruptRestoreState_Approved:
+		{
+			StrCat(title, sizeof(title), "审核状态: 已授权\n");
+			strcopy(requestLabel, sizeof(requestLabel), "恢复中断");
+		}
+		case InterruptRestoreState_Rejected:
+		{
+			Format(requestLabel, sizeof(requestLabel), "重新申请恢复");
+			StrCat(title, sizeof(title), "审核状态: 已拒绝\n");
+			if (gS_PendingInterruptRejectReason[client][0] != '\0')
+			{
+				StrCat(title, sizeof(title), "理由: ");
+				StrCat(title, sizeof(title), gS_PendingInterruptRejectReason[client]);
+				StrCat(title, sizeof(title), "\n");
+			}
+		}
+		default:
+		{
+			StrCat(title, sizeof(title), "审核状态: 未申请\n");
+			strcopy(requestLabel, sizeof(requestLabel), "申请恢复");
+		}
+	}
+
 	CancelClientMenu(client, true);
 	Menu menu = new Menu(MenuHandler_PendingInterrupt);
 	menu.OptionFlags = MENUFLAG_NO_SOUND;
 	menu.ExitButton = false;
 	menu.Pagination = MENU_NO_PAGINATION;
 	menu.SetTitle(title);
-	menu.AddItem("restore", "恢复中断", gB_PendingInterruptMapMatches[client] ? ITEMDRAW_DEFAULT : ITEMDRAW_DISABLED);
+	menu.AddItem("request_restore", requestLabel, requestDraw);
 	menu.AddItem("abort", "终止中断");
 	menu.Display(client, MENU_TIME_FOREVER);
 	gB_PendingInterruptMenuDisplayed[client] = true;
@@ -588,7 +807,7 @@ public int MenuHandler_PendingInterrupt(Menu menu, MenuAction action, int param1
 		char info[32];
 		menu.GetItem(param2, info, sizeof(info));
 
-		if (StrEqual(info, "restore"))
+		if (StrEqual(info, "request_restore"))
 		{
 			HandlePendingInterruptRestore(param1);
 		}
@@ -620,13 +839,24 @@ void HandlePendingInterruptRestore(int client)
 		return;
 	}
 
-	if (TryRestoreInterruptedRun(client))
+	if (!gB_PendingInterruptMapMatches[client])
 	{
-		ResetPendingInterruptState(client);
+		ReplyToCommand(client, "[InterruptPause] 当前地图与存档地图不一致，无法恢复。");
+		return;
 	}
-	else if (gB_HasPendingInterrupt[client])
+
+	if (!CanBeginInterruptPauseRestore(client))
 	{
-		SchedulePendingInterruptMenu(client, 0.5);
+		return;
+	}
+
+	if (gI_PendingInterruptRestoreState[client] == InterruptRestoreState_Approved)
+	{
+		RequestApprovedInterruptPausePayload(client);
+	}
+	else
+	{
+		RequestInterruptPauseRestoreApproval(client);
 	}
 }
 
@@ -637,28 +867,21 @@ void HandlePendingInterruptAbort(int client)
 		return;
 	}
 
-	InterruptSnapshot snapshot;
-	if (!ReadSnapshot(client, snapshot))
+	Handle request = CreateInterruptPauseRequest(client, "abort");
+	if (request == null)
 	{
-		CleanupSnapshot(snapshot);
-		ResetPendingInterruptState(client);
-		ReplyToCommand(client, "[InterruptPause] 你的中断存档已不存在，无需终止。");
+		ReplyToCommand(client, "[InterruptPause] 终止中断失败，无法连接后端服务。");
 		return;
 	}
 
-	bool deleted = DeleteSnapshot(snapshot.auth);
-	CleanupSnapshot(snapshot);
-	if (!deleted)
+	if (!SendInterruptPauseRequest(request, OnAbortInterruptPauseCompleted, client))
 	{
-		ReplyToCommand(client, "[InterruptPause] 终止中断失败，无法删除存档。请稍后再试。");
+		ReplyToCommand(client, "[InterruptPause] 终止中断失败，发送请求失败。");
 		return;
 	}
-
-	ResetPendingInterruptState(client);
-	ReplyToCommand(client, "[InterruptPause] 已终止本次中断存档。");
 }
 
-bool TryRestoreInterruptedRun(int client)
+bool CanBeginInterruptPauseRestore(int client)
 {
 	if (!gB_CanRestoreThisConnection[client])
 	{
@@ -678,20 +901,56 @@ bool TryRestoreInterruptedRun(int client)
 		return false;
 	}
 
-	InterruptSnapshot snapshot;
-	if (!ReadSnapshot(client, snapshot))
+	return true;
+}
+
+void RequestInterruptPauseRestoreApproval(int client)
+{
+	Handle request = CreateInterruptPauseRequest(client, "request-restore");
+	if (request == null)
 	{
-		DebugLog("restore read failed for client=%N", client);
+		ReplyToCommand(client, "[InterruptPause] 提交恢复申请失败，无法连接后端服务。");
+		return;
+	}
+
+	if (!SendInterruptPauseRequest(request, OnRequestInterruptPauseRestoreCompleted, client))
+	{
+		ReplyToCommand(client, "[InterruptPause] 提交恢复申请失败，请稍后再试。");
+		return;
+	}
+}
+
+void RequestApprovedInterruptPausePayload(int client)
+{
+	if (gB_PendingInterruptRestoreFetchInFlight[client])
+	{
+		return;
+	}
+
+	Handle request = CreateInterruptPauseRequest(client, "fetch-approved");
+	if (request == null)
+	{
+		ReplyToCommand(client, "[InterruptPause] 读取已授权存档失败，无法连接后端服务。");
+		return;
+	}
+
+	gB_PendingInterruptRestoreFetchInFlight[client] = true;
+	if (!SendInterruptPauseRequest(request, OnFetchApprovedInterruptPauseCompleted, client))
+	{
+		gB_PendingInterruptRestoreFetchInFlight[client] = false;
+		ReplyToCommand(client, "[InterruptPause] 读取已授权存档失败，请稍后再试。");
+		return;
+	}
+}
+
+bool ApplyInterruptPausePayload(int client, const char[] payload)
+{
+	char auth[MAX_AUTHID_LENGTH];
+	InterruptSnapshot snapshot;
+	if (!ResolvePrimaryAuth(client, auth, sizeof(auth)) || !DeserializeSnapshotPayload(auth, payload, snapshot))
+	{
 		CleanupSnapshot(snapshot);
-		ResetPendingInterruptState(client);
-		if (!CanResolveAnyClientAuth(client))
-		{
-			ReplyToCommand(client, "[InterruptPause] 你的 Steam 身份尚未就绪，请进服后稍等几秒再试一次。");
-		}
-		else
-		{
-			ReplyToCommand(client, "[InterruptPause] 没有找到你的中断存档，或存档内容不完整。");
-		}
+		ReplyToCommand(client, "[InterruptPause] 已授权存档内容无效，无法恢复。");
 		return false;
 	}
 
@@ -722,18 +981,9 @@ bool TryRestoreInterruptedRun(int client)
 	}
 
 	DebugLogGlobalState(client, "post-restore-after-apply");
-
-	bool deleted = DeleteSnapshot(snapshot.auth);
 	DebugLogGlobalState(client, "post-restore-before-cleanup");
-	CleanupSnapshot(snapshot);
-	if (!deleted)
-	{
-		DebugLog("restore delete snapshot failed for client=%N auth=%s", client, snapshot.auth);
-		ReplyToCommand(client, "[InterruptPause] 已恢复，但清理存档文件失败；下次恢复前请注意检查。");
-		return false;
-	}
-
 	DebugLog("restore success for client=%N auth=%s map=%s time=%.3f", client, snapshot.auth, snapshot.map, snapshot.time);
+
 	if (snapshot.penalizedForAirDisconnect)
 	{
 		ReplyToCommand(client, "[InterruptPause] 检测到异常断开。由于您断开时处于空中，已将您恢复至上一个存点。计时器已恢复。");
@@ -746,7 +996,284 @@ bool TryRestoreInterruptedRun(int client)
 	{
 		ReplyToCommand(client, "[InterruptPause] 已恢复到上次中断位置，checkpoint/teleport/undo 与运动状态也已恢复，计时当前保持暂停。");
 	}
+
+	CleanupSnapshot(snapshot);
 	return true;
+}
+
+public int OnPeekInterruptPauseSnapshotCompleted(Handle request, bool failure, bool requestSuccessful, EHTTPStatusCode statusCode, any contextData)
+{
+	int client = GetClientOfUserId(contextData);
+	char body[INTERRUPT_RESPONSE_MAX];
+	body[0] = '\0';
+	ReadInterruptPauseResponseBody(request, body, sizeof(body));
+	CloseHandle(request);
+
+	if (client <= 0 || client > MaxClients)
+	{
+		return 0;
+	}
+
+	gB_PendingInterruptLookupInFlight[client] = false;
+
+	if (!IsClientInGame(client) || IsFakeClient(client))
+	{
+		return 0;
+	}
+
+	if (failure || !requestSuccessful || view_as<int>(statusCode) >= 500)
+	{
+		DebugLog("peek interrupt snapshot failed for client=%N status=%d body=%s", client, view_as<int>(statusCode), body);
+		return 0;
+	}
+
+	char status[32];
+	char mapName[PLATFORM_MAX_PATH];
+	char timeValue[32];
+	char rejectReason[192];
+	ExtractInterruptPauseResponseValue(body, "status=", status, sizeof(status));
+	ExtractInterruptPauseResponseValue(body, "map_name=", mapName, sizeof(mapName));
+	ExtractInterruptPauseResponseValue(body, "time_seconds=", timeValue, sizeof(timeValue));
+	ExtractInterruptPauseResponseValue(body, "reject_reason=", rejectReason, sizeof(rejectReason));
+
+	if (StrEqual(status, "none") || status[0] == '\0')
+	{
+		ResetPendingInterruptState(client);
+		return 0;
+	}
+
+	gB_HasPendingInterrupt[client] = true;
+	gF_PendingInterruptTime[client] = StringToFloat(timeValue);
+	strcopy(gS_PendingInterruptMap[client], sizeof(gS_PendingInterruptMap[]), mapName);
+	strcopy(gS_PendingInterruptRejectReason[client], sizeof(gS_PendingInterruptRejectReason[]), rejectReason);
+	gI_PendingInterruptRestoreState[client] = ParseInterruptRestoreState(status);
+
+	char currentMap[PLATFORM_MAX_PATH];
+	GetCurrentMap(currentMap, sizeof(currentMap));
+	gB_PendingInterruptMapMatches[client] = StrEqual(currentMap, mapName, false);
+
+	if (gI_PendingInterruptRestoreState[client] == InterruptRestoreState_Pending)
+	{
+		SchedulePendingInterruptRefresh(client, INTERRUPT_REFRESH_INTERVAL_SECONDS);
+	}
+
+	if (CanDisplayPendingInterruptMenu(client))
+	{
+		SchedulePendingInterruptMenu(client, 0.5);
+	}
+
+	return 0;
+}
+
+public int OnWriteInterruptPauseSnapshotCompleted(Handle request, bool failure, bool requestSuccessful, EHTTPStatusCode statusCode, any contextData)
+{
+	int client = GetClientOfUserId(contextData);
+	char body[512];
+	body[0] = '\0';
+	ReadInterruptPauseResponseBody(request, body, sizeof(body));
+	CloseHandle(request);
+
+	if (!failure && requestSuccessful && view_as<int>(statusCode) < 400)
+	{
+		return 0;
+	}
+
+	if (client > 0 && client <= MaxClients && IsClientInGame(client))
+	{
+		DebugLog("interrupt snapshot save failed for client=%N status=%d body=%s", client, view_as<int>(statusCode), body);
+	}
+	else
+	{
+		LogError("[InterruptPause] snapshot save failed status=%d body=%s", view_as<int>(statusCode), body);
+	}
+	return 0;
+}
+
+public int OnRequestInterruptPauseRestoreCompleted(Handle request, bool failure, bool requestSuccessful, EHTTPStatusCode statusCode, any contextData)
+{
+	int client = GetClientOfUserId(contextData);
+	char body[INTERRUPT_RESPONSE_MAX];
+	body[0] = '\0';
+	ReadInterruptPauseResponseBody(request, body, sizeof(body));
+	CloseHandle(request);
+
+	if (client <= 0 || client > MaxClients || !IsClientInGame(client) || IsFakeClient(client))
+	{
+		return 0;
+	}
+
+	if (failure || !requestSuccessful || view_as<int>(statusCode) >= 500)
+	{
+		ReplyToCommand(client, "[InterruptPause] 提交恢复申请失败，后端服务暂时不可用。");
+		return 0;
+	}
+
+	char status[32];
+	char message[256];
+	char rejectReason[192];
+	ExtractInterruptPauseResponseValue(body, "status=", status, sizeof(status));
+	ExtractInterruptPauseResponseValue(body, "message=", message, sizeof(message));
+	ExtractInterruptPauseResponseValue(body, "reject_reason=", rejectReason, sizeof(rejectReason));
+
+	gI_PendingInterruptRestoreState[client] = ParseInterruptRestoreState(status);
+	strcopy(gS_PendingInterruptRejectReason[client], sizeof(gS_PendingInterruptRejectReason[]), rejectReason);
+
+	if (message[0] != '\0')
+	{
+		ReplyToCommand(client, "[InterruptPause] %s", message);
+	}
+
+	if (gI_PendingInterruptRestoreState[client] == InterruptRestoreState_Approved)
+	{
+		RequestApprovedInterruptPausePayload(client);
+		return 0;
+	}
+
+	if (gI_PendingInterruptRestoreState[client] == InterruptRestoreState_Pending)
+	{
+		SchedulePendingInterruptRefresh(client, INTERRUPT_REFRESH_INTERVAL_SECONDS);
+	}
+
+	if (gB_HasPendingInterrupt[client])
+	{
+		SchedulePendingInterruptMenu(client, 0.5);
+	}
+
+	return 0;
+}
+
+public int OnFetchApprovedInterruptPauseCompleted(Handle request, bool failure, bool requestSuccessful, EHTTPStatusCode statusCode, any contextData)
+{
+	int client = GetClientOfUserId(contextData);
+	char body[INTERRUPT_RESPONSE_MAX];
+	body[0] = '\0';
+	ReadInterruptPauseResponseBody(request, body, sizeof(body));
+	CloseHandle(request);
+
+	if (client <= 0 || client > MaxClients)
+	{
+		return 0;
+	}
+
+	gB_PendingInterruptRestoreFetchInFlight[client] = false;
+
+	if (!IsClientInGame(client) || IsFakeClient(client))
+	{
+		return 0;
+	}
+
+	if (failure || !requestSuccessful || view_as<int>(statusCode) >= 500)
+	{
+		ReplyToCommand(client, "[InterruptPause] 读取已授权存档失败，后端服务暂时不可用。");
+		return 0;
+	}
+
+	if (view_as<int>(statusCode) != 200)
+	{
+		char message[256];
+		ExtractInterruptPauseResponseValue(body, "message=", message, sizeof(message));
+		if (message[0] == '\0')
+		{
+			strcopy(message, sizeof(message), "恢复申请尚未通过审核。");
+		}
+		ReplyToCommand(client, "[InterruptPause] %s", message);
+		RequestPendingInterruptStateRefresh(client);
+		return 0;
+	}
+
+	if (!CanBeginInterruptPauseRestore(client))
+	{
+		return 0;
+	}
+
+	if (!ApplyInterruptPausePayload(client, body))
+	{
+		if (gB_HasPendingInterrupt[client])
+		{
+			SchedulePendingInterruptMenu(client, 0.5);
+		}
+		return 0;
+	}
+
+	RequestCompleteInterruptPauseRestore(client);
+	ResetPendingInterruptState(client);
+	return 0;
+}
+
+public int OnCompleteInterruptPauseRestoreCompleted(Handle request, bool failure, bool requestSuccessful, EHTTPStatusCode statusCode, any contextData)
+{
+	int client = GetClientOfUserId(contextData);
+	char body[512];
+	body[0] = '\0';
+	ReadInterruptPauseResponseBody(request, body, sizeof(body));
+	CloseHandle(request);
+
+	if (client <= 0 || client > MaxClients || !IsClientInGame(client) || IsFakeClient(client))
+	{
+		return 0;
+	}
+
+	if (failure || !requestSuccessful || view_as<int>(statusCode) >= 400)
+	{
+		DebugLog("complete restore notify failed for client=%N status=%d body=%s", client, view_as<int>(statusCode), body);
+	}
+
+	return 0;
+}
+
+public int OnAbortInterruptPauseCompleted(Handle request, bool failure, bool requestSuccessful, EHTTPStatusCode statusCode, any contextData)
+{
+	int client = GetClientOfUserId(contextData);
+	char body[512];
+	body[0] = '\0';
+	ReadInterruptPauseResponseBody(request, body, sizeof(body));
+	CloseHandle(request);
+
+	if (client <= 0 || client > MaxClients || !IsClientInGame(client) || IsFakeClient(client))
+	{
+		return 0;
+	}
+
+	if (failure || !requestSuccessful || view_as<int>(statusCode) >= 400)
+	{
+		ReplyToCommand(client, "[InterruptPause] 终止中断失败，请稍后再试。");
+		return 0;
+	}
+
+	ResetPendingInterruptState(client);
+	ReplyToCommand(client, "[InterruptPause] 已终止本次中断存档。");
+	return 0;
+}
+
+public int OnAbortInterruptPauseSilentlyCompleted(Handle request, bool failure, bool requestSuccessful, EHTTPStatusCode statusCode, any contextData)
+{
+	char body[512];
+	body[0] = '\0';
+	ReadInterruptPauseResponseBody(request, body, sizeof(body));
+	CloseHandle(request);
+	return 0;
+}
+
+void RequestCompleteInterruptPauseRestore(int client)
+{
+	Handle request = CreateInterruptPauseRequest(client, "complete-restore");
+	if (request == null)
+	{
+		return;
+	}
+
+	SendInterruptPauseRequest(request, OnCompleteInterruptPauseRestoreCompleted, client);
+}
+
+void RequestAbortInterruptPauseSnapshotSilently(int client)
+{
+	Handle request = CreateInterruptPauseRequest(client, "abort");
+	if (request == null)
+	{
+		return;
+	}
+
+	SendInterruptPauseRequest(request, OnAbortInterruptPauseSilentlyCompleted, client);
 }
 
 void FormatRunTime(float time, char[] buffer, int maxlen)
@@ -948,68 +1475,51 @@ void RequestAsyncSnapshotWriteWithCurrentSnapshot(int client, bool disconnectSav
 
 bool WriteSnapshotAsync(int client, const InterruptSnapshot snapshot)
 {
-	if (gDB == null)
-	{
-		DebugLog("sqlite async write failed: database not initialized");
-		return false;
-	}
-
-	char authSteamId64[MAX_AUTHID_LENGTH], authSteam3[MAX_AUTHID_LENGTH], authSteam2[MAX_AUTHID_LENGTH], authEngine[MAX_AUTHID_LENGTH];
-	authSteamId64[0] = '\0';
-	authSteam3[0] = '\0';
-	authSteam2[0] = '\0';
-	authEngine[0] = '\0';
-	GetClientAuthId(client, AuthId_SteamID64, authSteamId64, sizeof(authSteamId64));
-	GetClientAuthId(client, AuthId_Steam3, authSteam3, sizeof(authSteam3));
-	GetClientAuthId(client, AuthId_Steam2, authSteam2, sizeof(authSteam2));
-	GetClientAuthId(client, AuthId_Engine, authEngine, sizeof(authEngine));
-
 	char payload[SNAPSHOT_PAYLOAD_MAX];
 	if (!SerializeSnapshotPayload(snapshot, payload, sizeof(payload)))
 	{
-		DebugLog("sqlite async write failed: serialize payload auth=%s", snapshot.auth);
+		DebugLog("interrupt async write failed: serialize payload auth=%s", snapshot.auth);
 		return false;
 	}
 
-	char query[SNAPSHOT_WRITE_QUERY_MAX];
-	int queryLength = gDB.Format(query, sizeof(query),
-		"REPLACE INTO %s (auth_primary, auth_steamid64, auth_steam3, auth_steam2, auth_engine, map_name, storage_version, saved_at, payload) VALUES ('%s', '%s', '%s', '%s', '%s', '%s', %d, %d, '%s')",
-		SQLITE_TABLE_NAME,
-		snapshot.auth,
-		authSteamId64,
-		authSteam3,
-		authSteam2,
-		authEngine,
-		snapshot.map,
-		STORAGE_VERSION,
-		GetTime(),
-		payload);
-	if (queryLength >= sizeof(query) - 1)
+	Handle request = CreateInterruptPauseRequest(client, "save");
+	if (request == null)
 	{
-		DebugLog("sqlite async write failed: query truncated auth=%s", snapshot.auth);
+		DebugLog("interrupt async write failed: request create failed auth=%s", snapshot.auth);
 		return false;
 	}
 
-	gDB.Query(SQLCallback_WriteSnapshotAsync, query, GetClientUserId(client));
+	char playerName[128];
+	char ip[SNAPSHOT_IP_MAX_LENGTH];
+	char buffer[64];
+	GetClientName(client, playerName, sizeof(playerName));
+	GetClientIP(client, ip, sizeof(ip), true);
+
+	FloatToString(snapshot.time, buffer, sizeof(buffer));
+	SteamWorks_SetHTTPRequestGetOrPostParameter(request, "player_name", playerName);
+	SteamWorks_SetHTTPRequestGetOrPostParameter(request, "ip_address", ip);
+	SteamWorks_SetHTTPRequestGetOrPostParameter(request, "map_name", snapshot.map);
+	IntToString(snapshot.mode, buffer, sizeof(buffer));
+	SteamWorks_SetHTTPRequestGetOrPostParameter(request, "mode", buffer);
+	IntToString(snapshot.course, buffer, sizeof(buffer));
+	SteamWorks_SetHTTPRequestGetOrPostParameter(request, "course", buffer);
+	FloatToString(snapshot.time, buffer, sizeof(buffer));
+	SteamWorks_SetHTTPRequestGetOrPostParameter(request, "time_seconds", buffer);
+	IntToString(snapshot.checkpointCount, buffer, sizeof(buffer));
+	SteamWorks_SetHTTPRequestGetOrPostParameter(request, "checkpoint_count", buffer);
+	IntToString(snapshot.teleportCount, buffer, sizeof(buffer));
+	SteamWorks_SetHTTPRequestGetOrPostParameter(request, "teleport_count", buffer);
+	IntToString(STORAGE_VERSION, buffer, sizeof(buffer));
+	SteamWorks_SetHTTPRequestGetOrPostParameter(request, "storage_version", buffer);
+	SteamWorks_SetHTTPRequestGetOrPostParameter(request, "payload", payload);
+
+	if (!SendInterruptPauseRequest(request, OnWriteInterruptPauseSnapshotCompleted, client))
+	{
+		DebugLog("interrupt async write failed: send request failed auth=%s", snapshot.auth);
+		return false;
+	}
+
 	return true;
-}
-
-public void SQLCallback_WriteSnapshotAsync(Database db, DBResultSet results, const char[] error, any userid)
-{
-	if (error[0] == '\0')
-	{
-		return;
-	}
-
-	int client = GetClientOfUserId(userid);
-	if (client > 0 && client <= MaxClients && IsClientInGame(client))
-	{
-		DebugLog("sqlite async write failed for client=%N error=%s", client, error);
-	}
-	else
-	{
-		LogError("[InterruptPause] async snapshot write failed: %s", error);
-	}
 }
 
 bool StoreSafeSnapshot(int client, const InterruptSnapshot snapshot)
@@ -1604,60 +2114,7 @@ bool DeserializeSnapshotPayload(const char[] auth, const char[] payload, Interru
 
 bool WriteSnapshot(int client, const InterruptSnapshot snapshot)
 {
-	if (gDB == null)
-	{
-		DebugLog("sqlite write failed: database not initialized");
-		return false;
-	}
-
-	CleanupExpiredSnapshots();
-
-	char authSteamId64[MAX_AUTHID_LENGTH], authSteam3[MAX_AUTHID_LENGTH], authSteam2[MAX_AUTHID_LENGTH], authEngine[MAX_AUTHID_LENGTH];
-	authSteamId64[0] = '\0';
-	authSteam3[0] = '\0';
-	authSteam2[0] = '\0';
-	authEngine[0] = '\0';
-	GetClientAuthId(client, AuthId_SteamID64, authSteamId64, sizeof(authSteamId64));
-	GetClientAuthId(client, AuthId_Steam3, authSteam3, sizeof(authSteam3));
-	GetClientAuthId(client, AuthId_Steam2, authSteam2, sizeof(authSteam2));
-	GetClientAuthId(client, AuthId_Engine, authEngine, sizeof(authEngine));
-
-	char payload[SNAPSHOT_PAYLOAD_MAX];
-	if (!SerializeSnapshotPayload(snapshot, payload, sizeof(payload)))
-	{
-		DebugLog("sqlite write failed: serialize payload auth=%s", snapshot.auth);
-		return false;
-	}
-
-	char query[SNAPSHOT_WRITE_QUERY_MAX];
-	int queryLength = gDB.Format(query, sizeof(query),
-		"REPLACE INTO %s (auth_primary, auth_steamid64, auth_steam3, auth_steam2, auth_engine, map_name, storage_version, saved_at, payload) VALUES ('%s', '%s', '%s', '%s', '%s', '%s', %d, %d, '%s')",
-		SQLITE_TABLE_NAME,
-		snapshot.auth,
-		authSteamId64,
-		authSteam3,
-		authSteam2,
-		authEngine,
-		snapshot.map,
-		STORAGE_VERSION,
-		GetTime(),
-		payload);
-	if (queryLength >= sizeof(query) - 1)
-	{
-		DebugLog("sqlite write failed: query truncated auth=%s", snapshot.auth);
-		return false;
-	}
-
-	SQL_LockDatabase(gDB);
-	if (!SQL_FastQuery(gDB, query))
-	{
-		SQL_UnlockDatabase(gDB);
-		LogDatabaseError("replace snapshot failed");
-		return false;
-	}
-	SQL_UnlockDatabase(gDB);
-
-	return true;
+	return WriteSnapshotAsync(client, snapshot);
 }
 
 bool ReadSnapshot(int client, InterruptSnapshot snapshot)
@@ -1889,11 +2346,7 @@ bool ValidateSnapshotIpForRestore(int client, const InterruptSnapshot snapshot, 
 		{
 			ReplyToCommand(client, "[InterruptPause] 无法校验你当前的 IP，已拒绝恢复本次中断存档。");
 		}
-		bool deletedMissingCurrentIp = DeleteSnapshot(snapshot.auth);
-		if (!deletedMissingCurrentIp && notify)
-		{
-			ReplyToCommand(client, "[InterruptPause] 存档恢复已被拒绝，但清理存档失败；请联系管理员检查。");
-		}
+		RequestAbortInterruptPauseSnapshotSilently(client);
 		return false;
 	}
 
@@ -1919,11 +2372,7 @@ bool ValidateSnapshotIpForRestore(int client, const InterruptSnapshot snapshot, 
 		}
 	}
 
-	bool deleted = DeleteSnapshot(snapshot.auth);
-	if (!deleted && notify)
-	{
-		ReplyToCommand(client, "[InterruptPause] 存档恢复已被拒绝，但清理存档失败；请联系管理员检查。");
-	}
+	RequestAbortInterruptPauseSnapshotSilently(client);
 	return false;
 }
 
