@@ -149,42 +149,42 @@ onMounted(fetchSnapshots)
     </div>
 
     <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-      <div class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <div class="rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
         <p class="text-sm text-slate-500 dark:text-slate-400">总记录</p>
         <p class="mt-2 text-3xl font-semibold text-slate-900 dark:text-white">{{ stats.total }}</p>
       </div>
-      <div class="rounded-xl border border-amber-200 bg-amber-50/80 p-5 shadow-sm dark:border-amber-500/20 dark:bg-amber-500/10">
-        <p class="text-sm text-amber-700 dark:text-amber-300">待审核</p>
-        <p class="mt-2 text-3xl font-semibold text-amber-900 dark:text-amber-100">{{ stats.pending }}</p>
+      <div class="rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <p class="text-sm text-slate-500 dark:text-slate-400">待审核</p>
+        <p class="mt-2 text-3xl font-semibold text-amber-600 dark:text-amber-300">{{ stats.pending }}</p>
       </div>
-      <div class="rounded-xl border border-emerald-200 bg-emerald-50/80 p-5 shadow-sm dark:border-emerald-500/20 dark:bg-emerald-500/10">
-        <p class="text-sm text-emerald-700 dark:text-emerald-300">已授权</p>
-        <p class="mt-2 text-3xl font-semibold text-emerald-900 dark:text-emerald-100">{{ stats.approved }}</p>
+      <div class="rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <p class="text-sm text-slate-500 dark:text-slate-400">已授权</p>
+        <p class="mt-2 text-3xl font-semibold text-emerald-600 dark:text-emerald-300">{{ stats.approved }}</p>
       </div>
-      <div class="rounded-xl border border-rose-200 bg-rose-50/80 p-5 shadow-sm dark:border-rose-500/20 dark:bg-rose-500/10">
-        <p class="text-sm text-rose-700 dark:text-rose-300">已拒绝</p>
-        <p class="mt-2 text-3xl font-semibold text-rose-900 dark:text-rose-100">{{ stats.rejected }}</p>
+      <div class="rounded-xl border border-gray-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <p class="text-sm text-slate-500 dark:text-slate-400">已拒绝</p>
+        <p class="mt-2 text-3xl font-semibold text-rose-600 dark:text-rose-300">{{ stats.rejected }}</p>
       </div>
     </div>
 
-    <div class="flex flex-wrap gap-2">
+    <div class="flex flex-wrap gap-2 rounded-xl border border-gray-200 bg-white p-2 shadow-sm dark:border-slate-800 dark:bg-slate-900">
       <button
         v-for="item in filters"
         :key="item.key"
         @click="activeFilter = item.key"
-        class="rounded-lg border px-3 py-2 text-sm transition-colors"
+        class="rounded-lg border px-4 py-2 text-sm font-medium transition-all"
         :class="activeFilter === item.key
-          ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-300'
-          : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'"
+          ? 'border-blue-200 bg-blue-50 text-blue-600 shadow-sm dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-300'
+          : 'border-transparent bg-transparent text-slate-500 hover:bg-gray-100 hover:text-slate-800 dark:text-slate-400 dark:hover:bg-slate-800/70 dark:hover:text-slate-200'"
       >
         {{ item.label }}
       </button>
     </div>
 
-    <div class="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+    <div class="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
       <div class="overflow-x-auto">
         <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-800">
-          <thead class="bg-slate-50 dark:bg-slate-950/60">
+          <thead class="bg-gray-50 dark:bg-slate-950/50">
             <tr>
               <th class="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">玩家</th>
               <th class="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">服务器 / 地图</th>
