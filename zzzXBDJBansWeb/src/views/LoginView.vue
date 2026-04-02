@@ -28,7 +28,6 @@ const handleLogin = async () => {
     loading.value = false
     
     if (result.success) {
-         console.log('Login successful', result.user)
          router.push('/admin')
     } else {
          error.value = result.message

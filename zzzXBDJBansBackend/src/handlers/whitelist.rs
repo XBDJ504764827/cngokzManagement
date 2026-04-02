@@ -21,24 +21,30 @@ use std::sync::Arc;
     get,
     path = "/api/whitelist",
     responses(
-        (status = 200, description = "List approved whitelist", body = Vec<Whitelist>)
+        (status = 200, description = "List approved whitelist", body = Vec<Whitelist>),
+        (status = 500, description = "Server error")
     ),
     security(
         ("jwt" = [])
     )
 )]
 pub async fn list_whitelist(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let whitelist = sqlx::query_as::<_, Whitelist>(
+    match sqlx::query_as::<_, Whitelist>(
         "SELECT * FROM whitelist WHERE status = 'approved' ORDER BY created_at DESC",
     )
     .fetch_all(&state.db)
     .await
-    .unwrap_or_else(|e| {
-        tracing::error!("Failed to fetch whitelist: {:?}", e);
-        vec![]
-    });
-
-    Json(whitelist)
+    {
+        Ok(whitelist) => (StatusCode::OK, Json(whitelist)).into_response(),
+        Err(e) => {
+            tracing::error!("Failed to fetch whitelist: {:?}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "获取白名单失败" })),
+            )
+                .into_response()
+        }
+    }
 }
 
 // 获取待审核的申请列表（管理员）
@@ -46,24 +52,30 @@ pub async fn list_whitelist(State(state): State<Arc<AppState>>) -> impl IntoResp
     get,
     path = "/api/whitelist/pending",
     responses(
-        (status = 200, description = "List pending applications", body = Vec<Whitelist>)
+        (status = 200, description = "List pending applications", body = Vec<Whitelist>),
+        (status = 500, description = "Server error")
     ),
     security(
         ("jwt" = [])
     )
 )]
 pub async fn list_pending(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let pending = sqlx::query_as::<_, Whitelist>(
+    match sqlx::query_as::<_, Whitelist>(
         "SELECT * FROM whitelist WHERE status = 'pending' ORDER BY created_at DESC",
     )
     .fetch_all(&state.db)
     .await
-    .unwrap_or_else(|e| {
-        tracing::error!("Failed to fetch pending whitelist: {:?}", e);
-        vec![]
-    });
-
-    Json(pending)
+    {
+        Ok(pending) => (StatusCode::OK, Json(pending)).into_response(),
+        Err(e) => {
+            tracing::error!("Failed to fetch pending whitelist: {:?}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "获取待审核白名单失败" })),
+            )
+                .into_response()
+        }
+    }
 }
 
 // 获取已拒绝的申请列表（管理员）
@@ -71,24 +83,30 @@ pub async fn list_pending(State(state): State<Arc<AppState>>) -> impl IntoRespon
     get,
     path = "/api/whitelist/rejected",
     responses(
-        (status = 200, description = "List rejected applications", body = Vec<Whitelist>)
+        (status = 200, description = "List rejected applications", body = Vec<Whitelist>),
+        (status = 500, description = "Server error")
     ),
     security(
         ("jwt" = [])
     )
 )]
 pub async fn list_rejected(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let rejected = sqlx::query_as::<_, Whitelist>(
+    match sqlx::query_as::<_, Whitelist>(
         "SELECT * FROM whitelist WHERE status = 'rejected' ORDER BY created_at DESC",
     )
     .fetch_all(&state.db)
     .await
-    .unwrap_or_else(|e| {
-        tracing::error!("Failed to fetch rejected whitelist: {:?}", e);
-        vec![]
-    });
-
-    Json(rejected)
+    {
+        Ok(rejected) => (StatusCode::OK, Json(rejected)).into_response(),
+        Err(e) => {
+            tracing::error!("Failed to fetch rejected whitelist: {:?}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "获取已拒绝白名单失败" })),
+            )
+                .into_response()
+        }
+    }
 }
 
 // 玩家提交申请（公开接口，无需认证）
@@ -370,11 +388,12 @@ pub async fn delete_whitelist(
     get,
     path = "/api/whitelist/public-list",
     responses(
-        (status = 200, description = "Public whitelist check", body = Vec<PublicWhitelistEntry>)
+        (status = 200, description = "Public whitelist check", body = Vec<PublicWhitelistEntry>),
+        (status = 500, description = "Server error")
     )
 )]
 pub async fn list_public_whitelist(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let list = sqlx::query_as::<_, PublicWhitelistEntry>(
+    match sqlx::query_as::<_, PublicWhitelistEntry>(
         "SELECT
             id,
             name,
@@ -388,14 +407,19 @@ pub async fn list_public_whitelist(State(state): State<Arc<AppState>>) -> impl I
          FROM whitelist
          ORDER BY created_at DESC"
     )
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_else(|e| {
+    .fetch_all(&state.db)
+    .await
+    {
+        Ok(list) => (StatusCode::OK, Json(list)).into_response(),
+        Err(e) => {
             tracing::error!("Failed to fetch public whitelist: {:?}", e);
-            vec![]
-        });
-
-    Json(list)
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "获取公开白名单失败" })),
+            )
+                .into_response()
+        }
+    }
 }
 
 // 获取玩家 Steam 信息（公开接口）
