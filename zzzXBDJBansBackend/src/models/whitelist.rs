@@ -15,6 +15,15 @@ pub struct Whitelist {
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+#[derive(Debug, Serialize, Deserialize, FromRow, ToSchema)]
+pub struct PublicWhitelistEntry {
+    pub id: i64,
+    pub name: String,
+    pub status: String,
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub identifier_hint: Option<String>,
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateWhitelistRequest {
     pub steam_id: String,

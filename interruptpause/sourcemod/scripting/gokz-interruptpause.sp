@@ -2,31 +2,18 @@
 #pragma newdecls required
 
 #include <sourcemod>
+#include <cstrike>
 #include <sdktools>
 #include <entity_prop_stocks>
-#include <dbi>
 #include "SteamWorks.inc"
 #include <movement>
 #include <gokz/core>
 #include <gokz/hud>
 
 #define PLUGIN_NAME "GOKZ Interrupt Pause"
-#define SQLITE_DATABASE_NAME "gokz_interruptpause"
-#define SQLITE_TABLE_NAME "gokz_ip_snapshots"
 #define STORAGE_VERSION 1
 #define SNAPSHOT_IP_MAX_LENGTH 64
-#define SNAPSHOT_TTL_SECONDS 172800
-#define SNAPSHOT_CLEANUP_INTERVAL_SECONDS 300
 #define SNAPSHOT_PAYLOAD_MAX 32768
-#define SNAPSHOT_MAX_AUTH_CANDIDATES 4
-#define SNAPSHOT_ESCAPED_AUTH_MAX ((MAX_AUTHID_LENGTH * 2) + 1)
-#define SNAPSHOT_ESCAPED_MAP_MAX ((PLATFORM_MAX_PATH * 2) + 1)
-#define SNAPSHOT_ESCAPED_PAYLOAD_MAX ((SNAPSHOT_PAYLOAD_MAX * 2) + 1)
-#define SNAPSHOT_AUTH_CLAUSE_MAX ((SNAPSHOT_ESCAPED_AUTH_MAX * 5) + 128)
-#define SNAPSHOT_WHERE_CLAUSE_MAX ((SNAPSHOT_AUTH_CLAUSE_MAX * SNAPSHOT_MAX_AUTH_CANDIDATES) + 32)
-#define SNAPSHOT_SELECT_QUERY_MAX (SNAPSHOT_WHERE_CLAUSE_MAX + 256)
-#define SNAPSHOT_QUERY_OVERHEAD_MAX 1024
-#define SNAPSHOT_WRITE_QUERY_MAX (SNAPSHOT_ESCAPED_PAYLOAD_MAX + SNAPSHOT_ESCAPED_MAP_MAX + (SNAPSHOT_ESCAPED_AUTH_MAX * 5) + SNAPSHOT_QUERY_OVERHEAD_MAX)
 #define RUN_MONITOR_INTERVAL_SECONDS 1.0
 #define PERIODIC_SNAPSHOT_INTERVAL_SECONDS 30.0
 #define AIRBORNE_DISCONNECT_PENALTY_SECONDS 15.0
@@ -48,11 +35,9 @@ ConVar gCV_InterruptPauseServerId;
 ConVar gCV_InterruptPauseApiBaseUrl;
 ConVar gCV_InterruptPauseApiToken;
 ConVar gCV_InterruptPauseApiTimeout;
-Database gDB = null;
 Handle gH_RunMonitorTimer = null;
 int gI_DuckSpeedBaseOffset = -1;
 bool gB_DuckSpeedBaseOffsetCached;
-int gI_NextSnapshotCleanupAt = 0;
 bool gB_CanRestoreThisConnection[MAXPLAYERS + 1];
 bool gB_AutoInterruptSaveOnDisconnect[MAXPLAYERS + 1];
 bool gB_HasPendingInterrupt[MAXPLAYERS + 1];
@@ -173,12 +158,6 @@ public void OnPluginEnd()
 	{
 		ResetRunMonitorState(client);
 	}
-
-	if (gDB != null)
-	{
-		delete gDB;
-		gDB = null;
-	}
 }
 
 void ValidateSteamWorksSupport()
@@ -219,7 +198,7 @@ public Action Command_InterruptPause(int client, int args)
 	if (!wrote)
 	{
 		DebugLog("save write failed for client=%N auth=%s", client, snapshot.auth);
-		ReplyToCommand(client, "[InterruptPause] 保存失败，无法写入本地存档文件。");
+		ReplyToCommand(client, "[InterruptPause] 保存失败，无法写入后端中断存档。");
 		return Plugin_Handled;
 	}
 
@@ -673,11 +652,6 @@ public Action Timer_RefreshPendingInterruptState(Handle timer, any userid)
 
 	RequestPendingInterruptStateRefresh(client);
 	return Plugin_Stop;
-}
-
-void RefreshPendingInterruptState(int client)
-{
-	RequestPendingInterruptStateRefresh(client);
 }
 
 void SchedulePendingInterruptMenu(int client, float delay)
@@ -1862,122 +1836,6 @@ bool ApplySnapshot(int client, const InterruptSnapshot snapshot)
 	return true;
 }
 
-bool InitDatabase()
-{
-	char error[256];
-	gDB = SQLite_UseDatabase(SQLITE_DATABASE_NAME, error, sizeof(error));
-	if (gDB == null)
-	{
-		LogError("[InterruptPause] SQLite open failed: %s", error);
-		return false;
-	}
-
-	if (!EnsureDatabaseSchema())
-	{
-		return false;
-	}
-
-	CleanupExpiredSnapshots(true);
-	return true;
-}
-
-bool EnsureDatabaseSchema()
-{
-	if (gDB == null)
-	{
-		return false;
-	}
-
-	char query[1024];
-	Format(query, sizeof(query),
-		"CREATE TABLE IF NOT EXISTS %s (auth_primary TEXT PRIMARY KEY, auth_steamid64 TEXT, auth_steam3 TEXT, auth_steam2 TEXT, auth_engine TEXT, map_name TEXT NOT NULL, storage_version INTEGER NOT NULL, saved_at INTEGER NOT NULL, payload TEXT NOT NULL)",
-		SQLITE_TABLE_NAME);
-	if (!SQL_FastQuery(gDB, query))
-	{
-		LogDatabaseError("create table failed");
-		return false;
-	}
-
-	Format(query, sizeof(query), "CREATE INDEX IF NOT EXISTS idx_%s_steamid64 ON %s(auth_steamid64)", SQLITE_TABLE_NAME, SQLITE_TABLE_NAME);
-	if (!SQL_FastQuery(gDB, query))
-	{
-		LogDatabaseError("create steamid64 index failed");
-		return false;
-	}
-
-	Format(query, sizeof(query), "CREATE INDEX IF NOT EXISTS idx_%s_steam3 ON %s(auth_steam3)", SQLITE_TABLE_NAME, SQLITE_TABLE_NAME);
-	if (!SQL_FastQuery(gDB, query))
-	{
-		LogDatabaseError("create steam3 index failed");
-		return false;
-	}
-
-	Format(query, sizeof(query), "CREATE INDEX IF NOT EXISTS idx_%s_steam2 ON %s(auth_steam2)", SQLITE_TABLE_NAME, SQLITE_TABLE_NAME);
-	if (!SQL_FastQuery(gDB, query))
-	{
-		LogDatabaseError("create steam2 index failed");
-		return false;
-	}
-
-	Format(query, sizeof(query), "CREATE INDEX IF NOT EXISTS idx_%s_saved_at ON %s(saved_at)", SQLITE_TABLE_NAME, SQLITE_TABLE_NAME);
-	if (!SQL_FastQuery(gDB, query))
-	{
-		LogDatabaseError("create saved_at index failed");
-		return false;
-	}
-
-	if (!SQL_FastQuery(gDB, "PRAGMA user_version = 1"))
-	{
-		LogDatabaseError("set user_version failed");
-		return false;
-	}
-
-	return true;
-}
-
-void LogDatabaseError(const char[] context)
-{
-	char error[256];
-	if (gDB != null && SQL_GetError(gDB, error, sizeof(error)))
-	{
-		LogError("[InterruptPause] %s: %s", context, error);
-	}
-	else
-	{
-		LogError("[InterruptPause] %s", context);
-	}
-}
-
-void CleanupExpiredSnapshots(bool force = false)
-{
-	if (gDB == null)
-	{
-		return;
-	}
-
-	int now = GetTime();
-	if (!force && now < gI_NextSnapshotCleanupAt)
-	{
-		return;
-	}
-
-	char query[256];
-	int cutoff = now - SNAPSHOT_TTL_SECONDS;
-	SQL_LockDatabase(gDB);
-	gDB.Format(query, sizeof(query), "DELETE FROM %s WHERE saved_at < %d", SQLITE_TABLE_NAME, cutoff);
-	if (!SQL_FastQuery(gDB, query))
-	{
-		SQL_UnlockDatabase(gDB);
-		LogDatabaseError("delete expired snapshots failed");
-		gI_NextSnapshotCleanupAt = now + SNAPSHOT_CLEANUP_INTERVAL_SECONDS;
-		return;
-	}
-	SQL_UnlockDatabase(gDB);
-	gI_NextSnapshotCleanupAt = now + SNAPSHOT_CLEANUP_INTERVAL_SECONDS;
-
-	DebugLog("expired snapshot cleanup completed cutoff=%d", cutoff);
-}
-
 bool SerializeSnapshotPayload(const InterruptSnapshot snapshot, char[] payload, int maxlen)
 {
 	KeyValues kv = new KeyValues("snapshot");
@@ -2118,131 +1976,6 @@ bool WriteSnapshot(int client, const InterruptSnapshot snapshot)
 	return WriteSnapshotAsync(client, snapshot);
 }
 
-bool ReadSnapshot(int client, InterruptSnapshot snapshot)
-{
-	InitializeSnapshot(snapshot);
-	if (gDB == null)
-	{
-		DebugLog("sqlite read failed: database not initialized");
-		return false;
-	}
-	CleanupExpiredSnapshots();
-	if (!CanResolveAnyClientAuth(client))
-	{
-		DebugLog("read failed: no auth available for client=%N", client);
-		return false;
-	}
-
-	DebugLogAuthCandidates(client, "sqlite read auth candidates");
-
-	char auths[SNAPSHOT_MAX_AUTH_CANDIDATES][MAX_AUTHID_LENGTH];
-	int authCount = GetClientAuthCandidates(client, auths);
-	if (authCount <= 0)
-	{
-		DebugLog("sqlite read failed: no non-empty auth candidates for client=%N", client);
-		return false;
-	}
-
-	char whereClause[SNAPSHOT_WHERE_CLAUSE_MAX];
-	whereClause[0] = '\0';
-	for (int i = 0; i < authCount; i++)
-	{
-		char authClause[SNAPSHOT_AUTH_CLAUSE_MAX];
-		int authClauseLength = gDB.Format(authClause, sizeof(authClause),
-			"(auth_primary='%s' OR auth_steamid64='%s' OR auth_steam3='%s' OR auth_steam2='%s' OR auth_engine='%s')",
-			auths[i],
-			auths[i],
-			auths[i],
-			auths[i],
-			auths[i]);
-		if (authClauseLength >= sizeof(authClause) - 1)
-		{
-			DebugLog("sqlite read failed: auth clause truncated client=%N auth=%s", client, auths[i]);
-			return false;
-		}
-
-		int separatorLength = i > 0 ? 4 : 0;
-		if (strlen(whereClause) + separatorLength + authClauseLength >= sizeof(whereClause))
-		{
-			DebugLog("sqlite read failed: where clause truncated client=%N authCount=%d", client, authCount);
-			return false;
-		}
-
-		if (i > 0)
-		{
-			StrCat(whereClause, sizeof(whereClause), " OR ");
-		}
-		StrCat(whereClause, sizeof(whereClause), authClause);
-	}
-
-	char query[SNAPSHOT_SELECT_QUERY_MAX];
-	int queryLength = FormatEx(query, sizeof(query),
-		"SELECT auth_primary, payload, storage_version, saved_at FROM %s WHERE (%s) AND saved_at >= %d ORDER BY saved_at DESC LIMIT 1",
-		SQLITE_TABLE_NAME,
-		whereClause,
-		GetTime() - SNAPSHOT_TTL_SECONDS);
-	if (queryLength >= sizeof(query) - 1)
-	{
-		DebugLog("sqlite read failed: select query truncated client=%N", client);
-		return false;
-	}
-
-	SQL_LockDatabase(gDB);
-	DBResultSet results = SQL_Query(gDB, query);
-	if (results == null)
-	{
-		SQL_UnlockDatabase(gDB);
-		LogDatabaseError("select snapshot failed");
-		return false;
-	}
-
-	bool found = false;
-	if (results.FetchRow())
-	{
-		char matchedAuth[MAX_AUTHID_LENGTH];
-		char payload[SNAPSHOT_PAYLOAD_MAX];
-		int storageVersion = results.FetchInt(2);
-		int savedAt = results.FetchInt(3);
-		results.FetchString(0, matchedAuth, sizeof(matchedAuth));
-		results.FetchString(1, payload, sizeof(payload));
-		found = storageVersion == STORAGE_VERSION && DeserializeSnapshotPayload(matchedAuth, payload, snapshot);
-		if (!found)
-		{
-			DebugLog("sqlite read failed: version/payload mismatch auth=%s version=%d savedAt=%d", matchedAuth, storageVersion, savedAt);
-		}
-	}
-	delete results;
-	SQL_UnlockDatabase(gDB);
-
-	if (found)
-	{
-		DebugLog("sqlite read success client=%N auth=%s map=%s time=%.3f", client, snapshot.auth, snapshot.map, snapshot.time);
-		return true;
-	}
-
-	return false;
-}
-
-bool DeleteSnapshot(const char[] auth)
-{
-	if (gDB == null)
-	{
-		return false;
-	}
-
-	char query[512];
-	gDB.Format(query, sizeof(query), "DELETE FROM %s WHERE auth_primary='%s'", SQLITE_TABLE_NAME, auth);
-	SQL_LockDatabase(gDB);
-	if (!SQL_FastQuery(gDB, query))
-	{
-		SQL_UnlockDatabase(gDB);
-		LogDatabaseError("delete snapshot row failed");
-		return false;
-	}
-	SQL_UnlockDatabase(gDB);
-	return true;
-}
-
 void DebugLog(const char[] fmt, any ...)
 {
 	if (gCV_InterruptPauseDebug == null || !gCV_InterruptPauseDebug.BoolValue)
@@ -2254,30 +1987,6 @@ void DebugLog(const char[] fmt, any ...)
 	VFormat(buffer, sizeof(buffer), fmt, 2);
 	PrintToServer("[InterruptPause] %s", buffer);
 	LogMessage("[InterruptPause] %s", buffer);
-}
-
-void DebugLogAuthCandidates(int client, const char[] prefix)
-{
-	if (gCV_InterruptPauseDebug == null || !gCV_InterruptPauseDebug.BoolValue)
-	{
-		return;
-	}
-
-	char auths[4][MAX_AUTHID_LENGTH];
-	int count = GetClientAuthCandidates(client, auths);
-	char joined[256];
-	joined[0] = '\0';
-
-	for (int i = 0; i < count; i++)
-	{
-		if (i > 0)
-		{
-			StrCat(joined, sizeof(joined), " | ");
-		}
-		StrCat(joined, sizeof(joined), auths[i]);
-	}
-
-	DebugLog("%s client=%N auths=[%s]", prefix, client, joined);
 }
 
 void DebugLogGlobalState(int client, const char[] stage)
@@ -2375,30 +2084,6 @@ bool ValidateSnapshotIpForRestore(int client, const InterruptSnapshot snapshot, 
 
 	RequestAbortInterruptPauseSnapshotSilently(client);
 	return false;
-}
-
-int GetClientAuthCandidates(int client, char auths[SNAPSHOT_MAX_AUTH_CANDIDATES][MAX_AUTHID_LENGTH])
-{
-	int count = 0;
-
-	if (GetClientAuthId(client, AuthId_SteamID64, auths[count], sizeof(auths[])))
-	{
-		count++;
-	}
-	if (GetClientAuthId(client, AuthId_Steam3, auths[count], sizeof(auths[])))
-	{
-		count++;
-	}
-	if (GetClientAuthId(client, AuthId_Steam2, auths[count], sizeof(auths[])))
-	{
-		count++;
-	}
-	if (GetClientAuthId(client, AuthId_Engine, auths[count], sizeof(auths[])))
-	{
-		count++;
-	}
-
-	return count;
 }
 
 void InitializeSnapshot(InterruptSnapshot snapshot)

@@ -20,8 +20,13 @@ ConVar g_cvServerId;
 ConVar g_cvApiUrl;
 ConVar g_cvApiToken;
 ConVar g_cvRequestTimeout;
+ConVar g_cvFailOpen;
+ConVar g_cvFailureRetryLimit;
+ConVar g_cvRetryMaxDelay;
 
 bool g_bRequestPending[MAXPLAYERS + 1];
+int g_iPendingRetryAttempts[MAXPLAYERS + 1];
+int g_iFailureRetryAttempts[MAXPLAYERS + 1];
 
 public void OnPluginStart()
 {
@@ -31,10 +36,12 @@ public void OnPluginStart()
     g_cvApiUrl = CreateConVar("zzzxbdjbans_api_url", "http://127.0.0.1:3000/api/plugin/access-check", "Backend access-check API URL");
     g_cvApiToken = CreateConVar("zzzxbdjbans_api_token", "", "Backend plugin API token");
     g_cvRequestTimeout = CreateConVar("zzzxbdjbans_api_timeout", "10", "HTTP timeout in seconds", _, true, 3.0, true, 30.0);
+    g_cvFailOpen = CreateConVar("zzzxbdjbans_fail_open", "0", "Allow players to stay connected when the backend is temporarily unavailable.");
+    g_cvFailureRetryLimit = CreateConVar("zzzxbdjbans_failure_retry_limit", "2", "How many backend failure retries are attempted before enforcing denial.", _, true, 0.0, true, 10.0);
+    g_cvRetryMaxDelay = CreateConVar("zzzxbdjbans_retry_max_delay", "30", "Maximum retry delay in seconds for pending/backend failures.", _, true, 2.0, true, 120.0);
 
     AutoExecConfig(true, "zzzXBDJBans");
 
-    CreateTimer(60.0, Timer_CheckBans, _, TIMER_REPEAT);
     LogMessage("zzzXBDJBans Plugin v%s Loaded. Using backend API mode.", PLUGIN_VERSION);
 }
 
@@ -43,6 +50,7 @@ public void OnClientDisconnect(int client)
     if (client > 0 && client <= MaxClients)
     {
         g_bRequestPending[client] = false;
+        ResetRetryState(client);
     }
 }
 
@@ -53,6 +61,7 @@ public void OnClientPostAdminCheck(int client)
         return;
     }
 
+    ResetRetryState(client);
     SendAccessCheck(client, true);
 }
 
@@ -170,6 +179,21 @@ public int OnAccessCheckCompleted(Handle request, bool failure, bool requestSucc
     if (failure || !requestSuccessful)
     {
         LogError("Access check HTTP request failed for %N", client);
+        g_iPendingRetryAttempts[client] = 0;
+        if (strict)
+        {
+            if (g_cvFailOpen.BoolValue)
+            {
+                LogMessage("Access check failed open for %N", client);
+                ResetRetryState(client);
+                return 0;
+            }
+
+            if (ScheduleRetry(client, userid, RoundToFloor(DEFAULT_RETRY_AFTER), true))
+            {
+                return 0;
+            }
+        }
         HandleAccessFailure(client, strict, "验证服务暂时不可用");
         return 0;
     }
@@ -177,9 +201,26 @@ public int OnAccessCheckCompleted(Handle request, bool failure, bool requestSucc
     if (view_as<int>(statusCode) != 200)
     {
         LogError("Access check returned HTTP %d for %N. Body: %s", view_as<int>(statusCode), client, body);
+        g_iPendingRetryAttempts[client] = 0;
+        if (strict)
+        {
+            if (g_cvFailOpen.BoolValue)
+            {
+                LogMessage("Access check returned HTTP %d and failed open for %N", view_as<int>(statusCode), client);
+                ResetRetryState(client);
+                return 0;
+            }
+
+            if (ScheduleRetry(client, userid, RoundToFloor(DEFAULT_RETRY_AFTER), true))
+            {
+                return 0;
+            }
+        }
         HandleAccessFailure(client, strict, "验证服务返回异常");
         return 0;
     }
+
+    g_iFailureRetryAttempts[client] = 0;
 
     char action[32];
     char message[256];
@@ -189,6 +230,7 @@ public int OnAccessCheckCompleted(Handle request, bool failure, bool requestSucc
 
     if (StrEqual(action, "allow"))
     {
+        ResetRetryState(client);
         return 0;
     }
 
@@ -196,14 +238,12 @@ public int OnAccessCheckCompleted(Handle request, bool failure, bool requestSucc
     {
         if (strict)
         {
-            if (retryAfter <= 0)
-            {
-                retryAfter = RoundToFloor(DEFAULT_RETRY_AFTER);
-            }
-            CreateTimer(float(retryAfter), Timer_RetryAccessCheck, userid);
+            ScheduleRetry(client, userid, retryAfter, false);
         }
         return 0;
     }
+
+    ResetRetryState(client);
 
     if (message[0] == '\0')
     {
@@ -306,6 +346,60 @@ void HandleAccessFailure(int client, bool strict, const char[] reason)
     }
 }
 
+void ResetRetryState(int client)
+{
+    g_iPendingRetryAttempts[client] = 0;
+    g_iFailureRetryAttempts[client] = 0;
+}
+
+bool ScheduleRetry(int client, int userid, int suggestedRetryAfter, bool failureRetry)
+{
+    int baseDelay = suggestedRetryAfter > 0 ? suggestedRetryAfter : RoundToFloor(DEFAULT_RETRY_AFTER);
+    int maxDelay = g_cvRetryMaxDelay.IntValue;
+    int attempt = 0;
+
+    if (failureRetry)
+    {
+        if (g_iFailureRetryAttempts[client] >= g_cvFailureRetryLimit.IntValue)
+        {
+            return false;
+        }
+
+        attempt = g_iFailureRetryAttempts[client];
+        g_iFailureRetryAttempts[client]++;
+    }
+    else
+    {
+        attempt = g_iPendingRetryAttempts[client];
+        g_iPendingRetryAttempts[client]++;
+    }
+
+    float delay = GetBackoffDelay(baseDelay, attempt, maxDelay);
+    CreateTimer(delay, Timer_RetryAccessCheck, userid);
+    return true;
+}
+
+float GetBackoffDelay(int baseDelay, int attempt, int maxDelay)
+{
+    int delay = baseDelay;
+
+    for (int i = 0; i < attempt; i++)
+    {
+        if (delay >= maxDelay)
+        {
+            break;
+        }
+
+        delay *= 2;
+        if (delay > maxDelay)
+        {
+            delay = maxDelay;
+        }
+    }
+
+    return float(delay);
+}
+
 public Action Timer_RetryAccessCheck(Handle timer, any userid)
 {
     int client = GetClientOfUserId(userid);
@@ -316,17 +410,4 @@ public Action Timer_RetryAccessCheck(Handle timer, any userid)
 
     SendAccessCheck(client, true);
     return Plugin_Stop;
-}
-
-public Action Timer_CheckBans(Handle timer)
-{
-    for (int i = 1; i <= MaxClients; i++)
-    {
-        if (IsClientInGame(i) && !IsFakeClient(i))
-        {
-            SendAccessCheck(i, false);
-        }
-    }
-
-    return Plugin_Continue;
 }

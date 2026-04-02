@@ -5,8 +5,7 @@ use crate::services::steam_api::SteamService;
 use futures::stream::{self, StreamExt};
 use std::sync::Arc;
 
-pub async fn start_verification_worker(pool: PgPool) {
-    let steam_service = Arc::new(SteamService::new());
+pub async fn start_verification_worker(pool: PgPool, steam_service: Arc<SteamService>) {
     tracing::info!("Verification Worker started.");
 
     loop {

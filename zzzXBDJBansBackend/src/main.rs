@@ -92,6 +92,7 @@ mod services;
             models::interrupt_pause::PluginInterruptPauseSaveRequest,
             models::interrupt_pause::PluginInterruptPauseLookupRequest,
             models::whitelist::Whitelist,
+            models::whitelist::PublicWhitelistEntry,
             models::whitelist::CreateWhitelistRequest,
             models::whitelist::ApplyWhitelistRequest,
             crate::services::steam_api::PlayerSummary,
@@ -143,6 +144,8 @@ impl utoipa::Modify for SecurityAddon {
 pub struct AppState {
     pub db: sqlx::PgPool,
     pub client: reqwest::Client,
+    pub steam_service: Arc<crate::services::steam_api::SteamService>,
+    pub global_ban_service: Arc<crate::services::global_ban_cache::GlobalBanCacheService>,
 }
 
 #[tokio::main]
@@ -162,9 +165,17 @@ async fn main() {
 
     ensure_bootstrap_admin(&pool).await;
 
+    let client = reqwest::Client::new();
+    let steam_service = Arc::new(crate::services::steam_api::SteamService::new(client.clone()));
+    let global_ban_service = Arc::new(
+        crate::services::global_ban_cache::GlobalBanCacheService::new(client.clone())
+    );
+
     let state = Arc::new(AppState { 
         db: pool,
-        client: reqwest::Client::new(),
+        client,
+        steam_service,
+        global_ban_service,
     });
 
     // Spawn background task FIRST, cloning state
@@ -175,7 +186,10 @@ async fn main() {
 
     let verif_state = state.clone();
     tokio::spawn(async move {
-        crate::services::verification_worker::start_verification_worker(verif_state.db.clone()).await;
+        crate::services::verification_worker::start_verification_worker(
+            verif_state.db.clone(),
+            verif_state.steam_service.clone(),
+        ).await;
     });
 
     let protected_routes = Router::new()

@@ -64,7 +64,7 @@
                             v-model="searchQuery" 
                             type="text" 
                             class="block w-full pl-10 pr-3 py-2.5 bg-gray-50 dark:bg-slate-950/50 border border-gray-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-slate-200 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500/50 transition-all shadow-inner" 
-                            placeholder="搜索昵称 / SteamID..." 
+                            placeholder="搜索昵称 / 识别码..." 
                         />
                     </div>
                 </div>
@@ -105,9 +105,7 @@
                                 <tr>
                                     <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-slate-400 uppercase tracking-wider">交互状态</th>
                                     <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-slate-400 uppercase tracking-wider">信息</th>
-                                    <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-slate-400 uppercase tracking-wider">SteamID (64)</th>
-                                    <th v-if="currentTab === 'rejected' || currentTab === 'all'" scope="col" class="px-6 py-4 text-left text-xs font-semibold text-slate-400 uppercase tracking-wider">拒绝理由</th>
-                                    <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">处理人</th>
+                                    <th scope="col" class="px-6 py-4 text-left text-xs font-semibold text-slate-400 uppercase tracking-wider">识别码</th>
                                     <th scope="col" class="px-6 py-4 text-right text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">申请时间</th>
                                 </tr>
                             </thead>
@@ -124,25 +122,9 @@
                                         <div class="text-sm font-bold text-slate-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-300 transition-colors">{{ item.name }}</div>
                                     </td>
                                     <td class="px-6 py-4 whitespace-nowrap">
-                                        <button 
-                                            @click="copyToClipboard(item.steam_id_64 || item.steam_id)"
-                                            class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-gray-100 dark:bg-slate-950/50 border border-gray-200 dark:border-slate-800 hover:border-indigo-500/50 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 transition-all group/btn"
-                                            title="点击复制 SteamID64"
-                                        >
-                                            <span class="font-mono text-xs text-slate-500 dark:text-slate-400 group-hover/btn:text-indigo-600 dark:group-hover/btn:text-indigo-300">{{ item.steam_id_64 || item.steam_id }}</span>
-                                            <svg class="h-3.5 w-3.5 text-slate-500 dark:text-slate-600 group-hover/btn:text-indigo-500 dark:group-hover/btn:text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                                            </svg>
-                                        </button>
-                                    </td>
-                                    <td v-if="currentTab === 'rejected' || currentTab === 'all'" class="px-6 py-4">
-                                        <span v-if="item.status === 'rejected'" class="text-sm text-rose-500 dark:text-rose-400 max-w-xs truncate block" :title="item.reject_reason">
-                                            {{ item.reject_reason || '-' }}
+                                        <span class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-gray-100 dark:bg-slate-950/50 border border-gray-200 dark:border-slate-800">
+                                            <span class="font-mono text-xs text-slate-500 dark:text-slate-400">{{ item.identifier_hint || '未公开' }}</span>
                                         </span>
-                                        <span v-else class="text-slate-500 dark:text-slate-600">-</span>
-                                    </td>
-                                    <td v-if="currentTab !== 'pending'" class="px-6 py-4 whitespace-nowrap">
-                                        <span class="text-sm text-slate-500 dark:text-slate-400">{{ item.admin_name || '-' }}</span>
                                     </td>
                                     <td class="px-6 py-4 whitespace-nowrap text-right">
                                         <div class="text-sm text-slate-500 dark:text-slate-400">{{ formatDate(item.created_at) }}</div>
@@ -174,31 +156,19 @@
                             </span>
                         </div>
                         
-                             <!-- IDs Grid -->
+                             <!-- Identifier Grid -->
                         <div class="pl-3 space-y-2">
-                            <!-- ID64 (Primary) -->
                             <div class="bg-gray-50 dark:bg-slate-950/50 rounded-lg p-2 border border-gray-200 dark:border-slate-800 flex justify-between items-center group/id">
                                 <div class="flex flex-col">
-                                    <span class="text-[10px] text-slate-500 uppercase tracking-wider">SteamID64</span>
-                                    <span class="font-mono text-xs text-slate-700 dark:text-slate-300">{{ item.steam_id_64 || 'N/A' }}</span>
+                                    <span class="text-[10px] text-slate-500 uppercase tracking-wider">识别码</span>
+                                    <span class="font-mono text-xs text-slate-700 dark:text-slate-300">{{ item.identifier_hint || '未公开' }}</span>
                                 </div>
-                                <button @click="copyToClipboard(item.steam_id_64)" class="p-1.5 text-slate-400 hover:text-indigo-600 dark:text-slate-500 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 rounded transition-colors">
-                                    <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                                    </svg>
-                                </button>
                             </div>
 
-                            <!-- Additional Info -->
                             <div class="grid grid-cols-2 gap-2">
-                                <div v-if="item.status === 'rejected'" class="bg-rose-50 dark:bg-slate-950/30 rounded-lg p-2 border border-rose-100 dark:border-slate-800/50 col-span-2">
-                                    <span class="block text-[10px] text-rose-500/70 uppercase tracking-wider mb-0.5">拒绝理由</span>
-                                    <span class="text-xs text-rose-500 dark:text-rose-400">{{ item.reject_reason || '-' }}</span>
-                                </div>
-                                
-                                <div v-if="item.admin_name" class="bg-gray-50 dark:bg-slate-950/30 rounded-lg p-2 border border-gray-200 dark:border-slate-800/50">
-                                    <span class="block text-[10px] text-slate-500 uppercase tracking-wider mb-0.5">处理人</span>
-                                    <span class="text-xs text-slate-700 dark:text-slate-300">{{ item.admin_name }}</span>
+                                <div class="bg-gray-50 dark:bg-slate-950/30 rounded-lg p-2 border border-gray-200 dark:border-slate-800/50 col-span-2">
+                                    <span class="block text-[10px] text-slate-500 uppercase tracking-wider mb-0.5">说明</span>
+                                    <span class="text-xs text-slate-700 dark:text-slate-300">{{ getStatusDescription(item.status) }}</span>
                                 </div>
                             </div>
                         </div>
@@ -253,9 +223,6 @@
 import { ref, onMounted, computed, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import api from '@/utils/api'; // Use configured API instance
-import { useToast } from '@/composables/useToast';
-
-const toast = useToast();
 
 const route = useRoute();
 const router = useRouter();
@@ -315,9 +282,7 @@ const filteredList = computed(() => {
         const q = searchQuery.value.toLowerCase();
         result = result.filter(item => 
             item.name.toLowerCase().includes(q) || 
-            (item.steam_id && item.steam_id.includes(q)) ||
-            (item.steam_id_64 && item.steam_id_64.includes(q)) ||
-            (item.steam_id_3 && item.steam_id_3.includes(q))
+            (item.identifier_hint && item.identifier_hint.toLowerCase().includes(q))
         );
     }
 
@@ -386,6 +351,15 @@ const getStatusText = (status) => {
     return map[status] || status;
 };
 
+const getStatusDescription = (status) => {
+    const map = {
+        approved: '申请已通过，可以按服务器要求进服。',
+        pending: '申请仍在审核中，请耐心等待管理员处理。',
+        rejected: '申请未通过，如需复核请联系管理员。'
+    };
+    return map[status] || '状态未知';
+};
+
 const getStatusBadgeClass = (status) => {
     const map = {
         'approved': 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-500/20 shadow-emerald-500/10',
@@ -402,47 +376,6 @@ const getStatusBorderClass = (status) => {
         'rejected': 'bg-rose-500 shadow-[0_0_10px_theme(colors.rose.500)]'
     };
     return map[status] || 'bg-slate-500';
-};
-
-const copyToClipboard = async (text) => {
-    if (!text) return;
-
-    // Fallback for non-secure contexts (http)
-    if (!navigator.clipboard) {
-        try {
-            const textArea = document.createElement("textarea");
-            textArea.value = text;
-            
-            textArea.style.position = "fixed";
-            textArea.style.left = "-9999px";
-            textArea.style.top = "0";
-            document.body.appendChild(textArea);
-            
-            textArea.focus();
-            textArea.select();
-            
-            const successful = document.execCommand('copy');
-            document.body.removeChild(textArea);
-            
-            if (successful) {
-                toast.success('复制成功');
-            } else {
-                toast.error('复制失败');
-            }
-        } catch (err) {
-            console.error('Fallback copy failed: ', err);
-            toast.error('复制失败');
-        }
-        return;
-    }
-
-    try {
-        await navigator.clipboard.writeText(text);
-        toast.success('复制成功');
-    } catch (err) {
-        console.error('Failed to copy', err);
-        toast.error('复制失败');
-    }
 };
 
 onMounted(() => {

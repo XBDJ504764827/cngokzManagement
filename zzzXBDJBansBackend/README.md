@@ -77,7 +77,6 @@ message=...
 ```ini
 DATABASE_URL=postgres://user:password@localhost:5432/zzzXBDJBans
 JWT_SECRET=replace_me
-STEAM_API_KEY=replace_me
 PLUGIN_API_TOKEN=replace_me
 SERVER_HOST=0.0.0.0
 SERVER_PORT=3000
@@ -86,6 +85,7 @@ SERVER_PORT=3000
 可选配置：
 
 ```ini
+STEAM_API_KEY=replace_me
 PLUGIN_REQUIRED_RATING=3.0
 PLUGIN_REQUIRED_LEVEL=1
 RUST_LOG=info
@@ -95,6 +95,7 @@ RUST_LOG=info
 
 - `PLUGIN_API_TOKEN` 用于插件与后端之间的共享鉴权
 - `PLUGIN_REQUIRED_RATING` 和 `PLUGIN_REQUIRED_LEVEL` 用于插件进服验证阈值
+- `STEAM_API_KEY` 缺失时，后端不会再 panic；依赖 Steam Web API 的资料补全能力会降级
 
 ## 本地运行
 
@@ -144,6 +145,15 @@ zzzXBDJBansBackend/migrations
 - 修改 `PLUGIN_API_TOKEN` 时，需要同步更新所有游戏服配置
 - 如果插件反馈一直 `pending`，先检查 `services/verification_worker.rs`
 - 如果多服部署，请优先核对 `servers` 表和每台服的 `server_id`
+
+## 兼容性检查
+
+本轮静态检查结论：
+
+- `/api/plugin/access-check` 与 `/api/plugin/interrupt-pause/*` 都依赖 `PLUGIN_API_TOKEN` 和有效的 `server_id` 映射，任一缺失都会导致插件侧请求失败。
+- `STEAM_API_KEY` 现在是可选项，但缺失时会影响 Steam 资料解析、等级、游戏时长等依赖外部 API 的能力。
+- `interruptpause` 插件已切换为纯 HTTP 存储模式，后端必须完成 `interrupt_pause_snapshots` 相关迁移。
+- 封禁列表相关查询已新增索引；部署时需要确保最新 migration 已执行，否则优化不会生效。
 
 ## 重要源码位置
 

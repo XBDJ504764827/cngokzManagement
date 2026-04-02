@@ -6,9 +6,9 @@ use axum::{
 };
 use crate::handlers::auth::Claims;
 use std::sync::Arc;
-use crate::{AppState, models::whitelist::{Whitelist, CreateWhitelistRequest, ApplyWhitelistRequest, RejectWhitelistRequest}};
+use crate::{AppState, models::whitelist::{Whitelist, PublicWhitelistEntry, CreateWhitelistRequest, ApplyWhitelistRequest, RejectWhitelistRequest}};
 use serde_json::json;
-use crate::services::steam_api::{SteamService, PlayerSummary};
+use crate::services::steam_api::PlayerSummary;
 
 // 获取已审核通过的白名单列表（管理员）
 #[utoipa::path(
@@ -100,7 +100,7 @@ pub async fn apply_whitelist(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<ApplyWhitelistRequest>,
 ) -> impl IntoResponse {
-    let steam_service = SteamService::new();
+    let steam_service = state.steam_service.as_ref();
     
     // 解析输入的 SteamID 为各种格式
     // 严格模式：resolve_steam_id 如果返回 Some，表示解析成功。
@@ -179,7 +179,7 @@ pub async fn create_whitelist(
     Extension(user): Extension<Claims>,
     Json(payload): Json<CreateWhitelistRequest>,
 ) -> impl IntoResponse {
-    let steam_service = SteamService::new();
+    let steam_service = state.steam_service.as_ref();
     
     // 解析输入的 SteamID 为各种格式
     let steam_id_64_opt = steam_service.resolve_steam_id(&payload.steam_id).await;
@@ -326,16 +326,26 @@ pub async fn delete_whitelist(
     get,
     path = "/api/whitelist/public-list",
     responses(
-        (status = 200, description = "Public whitelist check", body = Vec<Whitelist>)
+        (status = 200, description = "Public whitelist check", body = Vec<PublicWhitelistEntry>)
     )
 )]
 pub async fn list_public_whitelist(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    // 查询所有记录，按时间倒序
-    // 注意：这里返回了完整结构体，包含 SteamID。如果不想公开 SteamID，需要定义一个新的结构体只包含 Name, Status, Time
-    // 根据用户需求"展示白名单通过的玩家，正在审核的玩家，被拒绝的玩家"，通常需要 ID 来确认是自己
-    let list = sqlx::query_as::<_, Whitelist>("SELECT * FROM whitelist ORDER BY created_at DESC")
+    let list = sqlx::query_as::<_, PublicWhitelistEntry>(
+        "SELECT
+            id,
+            name,
+            status,
+            created_at,
+            CASE
+                WHEN steam_id_64 IS NOT NULL AND LENGTH(steam_id_64) >= 4 THEN CONCAT('****', RIGHT(steam_id_64, 4))
+                WHEN steam_id IS NOT NULL AND LENGTH(steam_id) >= 4 THEN CONCAT('****', RIGHT(steam_id, 4))
+                ELSE NULL
+            END AS identifier_hint
+         FROM whitelist
+         ORDER BY created_at DESC"
+    )
         .fetch_all(&state.db)
         .await
         .unwrap_or_else(|e| {
@@ -360,6 +370,7 @@ pub async fn list_public_whitelist(
     )
 )]
 pub async fn get_player_info(
+    State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let steam_id = params.get("steam_id");
@@ -368,7 +379,7 @@ pub async fn get_player_info(
     }
     let steam_id = steam_id.unwrap();
 
-    let steam_service = SteamService::new();
+    let steam_service = state.steam_service.as_ref();
     let steam_id_64_opt = steam_service.resolve_steam_id(steam_id).await;
 
     if let Some(steam_id_64) = steam_id_64_opt {

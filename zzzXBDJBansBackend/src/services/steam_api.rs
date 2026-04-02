@@ -60,25 +60,34 @@ pub struct PlayerSummary {
     pub avatarfull: String,
     pub profileurl: String,
 }
-
-
+#[derive(Clone)]
 pub struct SteamService {
     client: reqwest::Client,
-    api_key: String,
+    api_key: Option<String>,
 }
 
 impl SteamService {
-    pub fn new() -> Self {
+    pub fn new(client: reqwest::Client) -> Self {
+        let api_key = std::env::var("STEAM_API_KEY")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+
+        if api_key.is_none() {
+            tracing::warn!("STEAM_API_KEY is not set; Steam API dependent features will be limited");
+        }
+
         Self {
-            client: reqwest::Client::new(),
-            api_key: std::env::var("STEAM_API_KEY").expect("STEAM_API_KEY must be set"),
+            client,
+            api_key,
         }
     }
 
     pub async fn get_steam_level(&self, steam_id_64: &str) -> Option<i32> {
+        let api_key = self.api_key.as_deref()?;
         let url = format!(
             "https://api.steamchina.com/IPlayerService/GetSteamLevel/v0001/?key={}&steamid={}&include_appinfo=1",
-            &self.api_key, steam_id_64
+            api_key, steam_id_64
         );
 
         match self.client.get(&url).send().await {
@@ -93,10 +102,11 @@ impl SteamService {
     }
 
     pub async fn get_csgo_playtime_minutes(&self, steam_id_64: &str) -> Option<i32> {
+        let api_key = self.api_key.as_deref()?;
         // CS:GO AppID = 730
         let url = format!(
             "https://api.steamchina.com/IPlayerService/GetOwnedGames/v0001/?key={}&steamid={}&include_appinfo=1&format=json",
-            &self.api_key, steam_id_64
+            api_key, steam_id_64
         );
 
         match self.client.get(&url).send().await {
@@ -208,9 +218,10 @@ impl SteamService {
     }
 
     async fn resolve_vanity_url(&self, vanity_url: &str) -> Option<String> {
+        let api_key = self.api_key.as_deref()?;
         let url = format!(
             "https://api.steampowered.com/ISteamUser/ResolveVanityURL/v0001/?key={}&vanityurl={}",
-            &self.api_key, vanity_url
+            api_key, vanity_url
         );
         
         match self.client.get(&url).send().await {
@@ -264,9 +275,10 @@ impl SteamService {
         Some(format!("[U:1:{}]", account_id))
     }
     pub async fn get_player_summary(&self, steam_id_64: &str) -> Option<PlayerSummary> {
+        let api_key = self.api_key.as_deref()?;
         let url = format!(
             "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v0002/?key={}&steamids={}",
-            &self.api_key, steam_id_64
+            api_key, steam_id_64
         );
 
         match self.client.get(&url).send().await {

@@ -104,9 +104,6 @@ pub async fn list_public_bans(
     }
 }
 
-// ... imports
-use crate::services::steam_api::SteamService;
-
 // ... check_ban
 #[utoipa::path(
     get,
@@ -138,7 +135,7 @@ pub async fn check_ban(
     // 将输入的 SteamID 转换为 steam_id_64 格式进行匹配
     let mut steam_id_64 = String::new();
     if !steam_id.is_empty() {
-        let steam_service = SteamService::new();
+        let steam_service = state.steam_service.as_ref();
         if let Some(id64) = steam_service.resolve_steam_id(&steam_id).await {
             steam_id_64 = id64;
         }
@@ -237,6 +234,7 @@ pub async fn check_ban(
     )
 )]
 pub async fn check_global_ban(
+    State(state): State<Arc<AppState>>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let steam_id = params.get("steam_id");
@@ -245,27 +243,8 @@ pub async fn check_global_ban(
     }
     let steam_id = steam_id.unwrap();
 
-    // Proxy request to GOKZ API
-    let url = format!("https://api.gokz.top/api/v1/bans?steamid64={}", steam_id);
-    match reqwest::get(&url).await {
-        Ok(resp) => {
-            if resp.status().is_success() {
-                match resp.json::<serde_json::Value>().await {
-                    Ok(data) => (StatusCode::OK, Json(data)).into_response(),
-                    Err(e) => {
-                        tracing::error!("Failed to parse GOKZ API response: {}", e);
-                         (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "Failed to parse external API" }))).into_response()
-                    }
-                }
-            } else {
-                 (resp.status(), Json(json!({ "error": "External API error" }))).into_response()
-            }
-        },
-        Err(e) => {
-            tracing::error!("Failed to call GOKZ API: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "Failed to call external API" }))).into_response()
-        }
-    }
+    let data = state.global_ban_service.get_ban(steam_id).await;
+    (StatusCode::OK, Json(data)).into_response()
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -288,52 +267,8 @@ pub async fn check_global_ban_bulk(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<BulkBanCheckRequest>,
 ) -> impl IntoResponse {
-    let client = state.client.clone();
-    let unique_ids: Vec<String> = payload.steam_ids.into_iter()
-        .filter(|id| !id.is_empty())
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect();
-
-    let fetched_results = fetch_all_bans(unique_ids, client).await;
-    
-    let mut map = std::collections::HashMap::new();
-    for (id, res) in fetched_results {
-         map.insert(id, res);
-    }
-
+    let map = state.global_ban_service.get_bans(payload.steam_ids).await;
     (StatusCode::OK, Json(map)).into_response()
-}
-
-async fn fetch_all_bans(ids: Vec<String>, client: reqwest::Client) -> Vec<(String, Option<serde_json::Value>)> {
-    let mut tasks = Vec::new();
-    for id in ids {
-        let client = client.clone();
-        tasks.push(tokio::spawn(async move {
-            let url = format!("https://api.gokz.top/api/v1/bans?steamid64={}", id);
-            match client.get(&url).send().await {
-                Ok(resp) => {
-                    if resp.status().is_success() {
-                        match resp.json::<serde_json::Value>().await {
-                            Ok(data) => (id, Some(data)),
-                            Err(_) => (id, None),
-                        }
-                    } else {
-                        (id, None)
-                    }
-                },
-                Err(_) => (id, None),
-            }
-        }));
-    }
-
-    let mut results = Vec::new();
-    for task in tasks {
-        if let Ok(res) = task.await {
-            results.push(res);
-        }
-    }
-    results
 }
 
 #[utoipa::path(
@@ -356,7 +291,7 @@ pub async fn create_ban(
     let expires_at = calculate_expires_at(&payload.duration);
 
     // 解析输入的 SteamID 为各种格式
-    let steam_service = SteamService::new();
+    let steam_service = state.steam_service.as_ref();
     let steam_id_64 = steam_service.resolve_steam_id(&payload.steam_id).await
         .unwrap_or_else(|| payload.steam_id.clone());
     

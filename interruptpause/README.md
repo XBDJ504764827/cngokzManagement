@@ -17,6 +17,12 @@ interruptpause/
 
 `SteamWorks.inc` 已随插件目录提供，编译时不再依赖仓库其他目录。
 
+当前版本为纯 HTTP 后端模式：
+
+- 不再使用 SQLite 本地存档
+- 不再依赖 `dbi` 或 `configs/databases.cfg`
+- 所有快照写入、查询、审核和恢复都通过 `zzzXBDJBansBackend` 完成
+
 ## 功能流
 
 1. 玩家执行 `!itimep` / `!interruptpause`，插件采集当前 GOKZ 快照。
@@ -34,6 +40,7 @@ interruptpause/
 
 - SourceMod 1.11+ 编译器 `spcomp`
 - SteamWorks extension
+- 标准 `cstrike` include
 - GOKZ 运行所需 include 和依赖：
   - `gokz/core`
   - `gokz/hud`
@@ -46,7 +53,9 @@ interruptpause/
 把 `interruptpause/sourcemod/scripting` 放到一套完整的 SourceMod scripting 环境中后执行：
 
 ```bash
-spcomp gokz-interruptpause.sp
+/home/xbdj/cngokzManagement/sourcemod-1.11.0-git6970-linux/addons/sourcemod/scripting/spcomp \
+  -i/home/xbdj/cngokzManagement/gokz/addons/sourcemod/scripting/include \
+  gokz-interruptpause.sp
 ```
 
 如果你的编译环境不在当前目录，保证 include 路径至少覆盖：
@@ -55,6 +64,16 @@ spcomp gokz-interruptpause.sp
 interruptpause/sourcemod/scripting
 addons/sourcemod/scripting/include
 ```
+
+此外还必须提供这些第三方 include：
+
+```text
+movement.inc
+gokz/core.inc
+gokz/hud.inc
+```
+
+如果你使用当前仓库里的 GOKZ 目录，上面的 `-i` 参数就可以直接指向现成的 include 路径。
 
 ### 发布文件
 
@@ -99,6 +118,7 @@ csgo/addons/sourcemod/plugins/
 确保服务器已安装：
 
 - SteamWorks extension
+- CS:GO / CS:S 的 `cstrike` 扩展
 - GOKZ
 - movement
 
@@ -276,5 +296,17 @@ POST /api/plugin/interrupt-pause/abort
 
 ## 已知说明
 
-- 当前仓库环境未提供 `spcomp`，本次未做本机实际编译，只完成了源码整理和前后端联调。
-- 插件中仍保留了旧的本地 SQLite 兼容函数，但当前主流程已切换到 HTTP 后端存储。
+- 当前仓库已用 `/home/xbdj/cngokzManagement/sourcemod-1.11.0-git6970-linux/addons/sourcemod/scripting/spcomp` 做过实编译检查。
+- `interruptpause` 已在本机通过带 `-i/home/xbdj/cngokzManagement/gokz/addons/sourcemod/scripting/include` 的命令完成实编译。
+- 插件已移除旧的 SQLite 兼容代码，当前仅支持 HTTP 后端存储模式。
+
+## 兼容性检查
+
+本轮静态检查结论：
+
+- 语法层面使用了 `#pragma newdecls required`，应以 SourceMod 1.11+ 为最低编译目标。
+- 插件显式依赖 `SteamWorks_CreateHTTPRequest`、`SteamWorks_SetHTTPCallbacks`、`SteamWorks_SendHTTPRequest`，未安装 SteamWorks 时会直接 `SetFailState`。
+- 插件使用 `CS_TEAM_SPECTATOR`，已补充 `#include <cstrike>`，运行环境应为带标准 `cstrike` include 的 CS 系 SourceMod。
+- 插件依赖 `movement`、`gokz/core`、`gokz/hud`，不适用于未安装 GOKZ 的通用服。
+- 本机已在补齐 GOKZ include 搜索路径后完成真实编译，说明当前源码与现有 GOKZ 头文件兼容。
+- 当前实现会在玩家进服后定时刷新待恢复状态，依赖游戏服到后端的出站 HTTP 连通性。

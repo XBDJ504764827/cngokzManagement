@@ -9,7 +9,6 @@ use crate::AppState;
 use crate::models::user::{Admin, CreateAdminRequest, UpdateAdminRequest};
 use crate::handlers::auth::Claims;
 use crate::utils::log_admin_action;
-use crate::services::steam_api::SteamService;
 use bcrypt::{hash, DEFAULT_COST};
 
 fn is_super_admin(user: &Claims) -> bool {
@@ -107,7 +106,7 @@ pub async fn create_admin(
 
     // 解析 SteamID 为各种格式
     let (steam_id_2, steam_id_3, steam_id_64) = if let Some(ref input_steam_id) = payload.steam_id {
-        let steam_service = SteamService::new();
+        let steam_service = state.steam_service.as_ref();
         let id64 = steam_service.resolve_steam_id(input_steam_id).await
             .unwrap_or_else(|| input_steam_id.clone());
         
@@ -221,7 +220,7 @@ pub async fn update_admin(
             if trimmed.is_empty() {
                 (None, None, None)
             } else {
-                let steam_service = SteamService::new();
+                let steam_service = state.steam_service.as_ref();
                 let id64 = steam_service
                     .resolve_steam_id(&trimmed)
                     .await
