@@ -26,7 +26,13 @@ pub async fn auth_middleware(
     }
 
     let token = &auth_header[7..];
-    let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "secret".to_string());
+    let secret = match std::env::var("JWT_SECRET") {
+        Ok(secret) => secret,
+        Err(_) => {
+            tracing::error!("JWT_SECRET is not set");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
     
     let token_data = decode::<Claims>(
         token,

@@ -78,6 +78,7 @@ mod services;
             models::user::UpdateAdminRequest,
             models::user::LoginRequest,
             models::user::LoginResponse,
+            models::user::AuthUser,
             models::user::ChangePasswordRequest,
             models::ban::Ban,
             models::ban::PublicBan,
@@ -144,36 +145,10 @@ pub struct AppState {
 async fn main() {
     dotenv().ok();
     tracing_subscriber::fmt::init();
+    require_env("JWT_SECRET");
 
     let pool = db::establish_connection().await;
-
-    // FIX: Always remove the known broken migration record to prevent VersionMismatch on different envs
-    tracing::info!("Attempting to clear specific migration records...");
-    
-    match sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 20260216190000").execute(&pool).await {
-        Ok(_) => tracing::info!("Cleared migration 20260216190000"),
-        Err(e) => tracing::warn!("Failed to clear 20260216190000: {}", e),
-    }
-
-    // Force re-run init migration if admins table is missing
-    let table_exists: bool = sqlx::query_scalar("SELECT to_regclass('public.admins') IS NOT NULL")
-        .fetch_one(&pool)
-        .await
-        .unwrap_or(false);
-    if !table_exists {
-        tracing::info!("'admins' table missing, forcing re-run of init migration...");
-        let _ = sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 20260125000000").execute(&pool).await;
-    }
-    
-    match sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 20260217130000").execute(&pool).await {
-         Ok(_) => tracing::info!("Cleared dirty migration 20260217130000"),
-         Err(e) => tracing::warn!("Failed to clear 20260217130000: {}", e),
-    }
-
-    match sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 20260125020000").execute(&pool).await {
-         Ok(done) => tracing::info!("Cleared dirty migration 20260125020000. Rows affected: {}", done.rows_affected()),
-         Err(e) => tracing::error!("Failed to clear dirty migration 20260125020000: {}", e),
-    }
+    apply_requested_migration_repairs(&pool).await;
 
     // Run migrations
     sqlx::migrate!("./migrations")
@@ -181,7 +156,7 @@ async fn main() {
         .await
         .expect("Failed to run migrations");
 
-    ensure_super_admin(&pool).await;
+    ensure_bootstrap_admin(&pool).await;
 
     let state = Arc::new(AppState { 
         db: pool,
@@ -202,6 +177,7 @@ async fn main() {
     let protected_routes = Router::new()
         .route("/api/auth/me", get(handlers::auth::me))
         .route("/api/auth/logout", axum::routing::post(handlers::auth::logout))
+        .route("/api/auth/change-password", axum::routing::post(handlers::auth::change_password))
         // Admins
         .route("/api/admins", get(handlers::admin::list_admins).post(handlers::admin::create_admin))
         .route("/api/admins/:id", axum::routing::put(handlers::admin::update_admin).delete(handlers::admin::delete_admin))
@@ -248,7 +224,6 @@ async fn main() {
         .route("/swagger-ui", get(swagger_ui_notice))
         .route("/swagger-ui/", get(swagger_ui_notice))
         .route("/api/auth/login", axum::routing::post(handlers::auth::login))
-        .route("/api/auth/change-password", axum::routing::post(handlers::auth::change_password))
         // 公开路由：白名单申请（无需认证）
         .route("/api/whitelist/apply", axum::routing::post(handlers::whitelist::apply_whitelist))
         .route("/api/whitelist/public-list", get(handlers::whitelist::list_public_whitelist))
@@ -287,29 +262,90 @@ async fn swagger_ui_notice() -> &'static str {
     "Swagger UI is not bundled in this build. Use /api-docs/openapi.json instead."
 }
 
-async fn ensure_super_admin(pool: &sqlx::PgPool) {
+fn require_env(key: &str) {
+    if std::env::var(key).is_err() {
+        panic!("{key} must be set");
+    }
+}
+
+async fn apply_requested_migration_repairs(pool: &sqlx::PgPool) {
+    let versions = match std::env::var("SQLX_MIGRATION_REPAIR_VERSIONS") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => return,
+    };
+
+    tracing::warn!(
+        "Applying explicit SQLX migration repairs from SQLX_MIGRATION_REPAIR_VERSIONS"
+    );
+
+    for raw_version in versions.split(',') {
+        let version = raw_version.trim();
+        if version.is_empty() {
+            continue;
+        }
+
+        let parsed_version = match version.parse::<i64>() {
+            Ok(value) => value,
+            Err(_) => {
+                tracing::error!("Skipping invalid migration version '{}'", version);
+                continue;
+            }
+        };
+
+        match sqlx::query("DELETE FROM _sqlx_migrations WHERE version = $1")
+            .bind(parsed_version)
+            .execute(pool)
+            .await
+        {
+            Ok(done) => tracing::warn!(
+                "Removed migration version {} from _sqlx_migrations. Rows affected: {}",
+                parsed_version,
+                done.rows_affected()
+            ),
+            Err(e) => tracing::error!(
+                "Failed to remove migration version {}: {}",
+                parsed_version,
+                e
+            ),
+        }
+    }
+}
+
+async fn ensure_bootstrap_admin(pool: &sqlx::PgPool) {
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM admins")
         .fetch_one(pool)
         .await
         .unwrap_or(0);
 
-    if count == 0 {
-        tracing::info!("No admins found. Creating default super_admin.");
-        let username = "admin";
-        let password = "123456"; 
-        let hashed = bcrypt::hash(password, bcrypt::DEFAULT_COST).expect("Failed to hash password");
-        
-        let _ = sqlx::query(
-            "INSERT INTO admins (username, password, role) VALUES ($1, $2, 'super_admin')"
-        )
-        .bind(username)
-        .bind(hashed)
-        .execute(pool)
-        .await
-        .expect("Failed to create default admin");
-        
-        tracing::info!("Default admin created: user='admin', pass='123456'");
-    } else {
-        tracing::info!("Super admin exists. Skipping creation.");
+    if count != 0 {
+        tracing::info!("Admin account already exists. Skipping bootstrap admin creation.");
+        return;
+    }
+
+    let username = std::env::var("BOOTSTRAP_ADMIN_USERNAME").ok();
+    let password = std::env::var("BOOTSTRAP_ADMIN_PASSWORD").ok();
+
+    match (username, password) {
+        (Some(username), Some(password)) => {
+            tracing::warn!(
+                "No admins found. Creating bootstrap super_admin from environment configuration."
+            );
+            let hashed = bcrypt::hash(password, bcrypt::DEFAULT_COST)
+                .expect("Failed to hash bootstrap admin password");
+
+            sqlx::query(
+                "INSERT INTO admins (username, password, role) VALUES ($1, $2, 'super_admin')"
+            )
+            .bind(username)
+            .bind(hashed)
+            .execute(pool)
+            .await
+            .expect("Failed to create bootstrap admin");
+        }
+        _ => {
+            tracing::error!(
+                "No admins found and bootstrap credentials are missing. Set BOOTSTRAP_ADMIN_USERNAME and BOOTSTRAP_ADMIN_PASSWORD to create the first admin."
+            );
+        }
     }
 }

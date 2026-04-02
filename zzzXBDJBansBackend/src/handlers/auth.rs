@@ -7,7 +7,7 @@ use axum::{
 use serde_json::json;
 use std::sync::Arc;
 use crate::AppState;
-use crate::models::user::{LoginRequest, LoginResponse, ChangePasswordRequest};
+use crate::models::user::{AuthUser, LoginRequest, LoginResponse, ChangePasswordRequest};
 use bcrypt::verify;
 use jsonwebtoken::{encode, Header, EncodingKey};
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,13 @@ pub struct Claims {
     pub sub: String, // username
     pub role: String,
     pub exp: usize,
+}
+
+fn jwt_secret() -> Result<String, StatusCode> {
+    std::env::var("JWT_SECRET").map_err(|_| {
+        tracing::error!("JWT_SECRET is not set");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })
 }
 
 #[utoipa::path(
@@ -60,11 +67,33 @@ pub async fn login(
                     role: user.role.clone(),
                     exp: expiration as usize,
                 };
-                
-                let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "secret".to_string());
-                let token = encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_ref())).unwrap();
 
-                return (StatusCode::OK, Json(json!({ "token": token, "user": { "username": user.username, "role": user.role } }))).into_response();
+                let secret = match jwt_secret() {
+                    Ok(secret) => secret,
+                    Err(status) => return status.into_response(),
+                };
+
+                let token = match encode(
+                    &Header::default(),
+                    &claims,
+                    &EncodingKey::from_secret(secret.as_ref()),
+                ) {
+                    Ok(token) => token,
+                    Err(e) => {
+                        tracing::error!("Failed to encode JWT for user '{}': {}", user.username, e);
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    }
+                };
+
+                let response = LoginResponse {
+                    token,
+                    user: AuthUser {
+                        username: user.username,
+                        role: user.role,
+                    },
+                };
+
+                return (StatusCode::OK, Json(response)).into_response();
             } else {
                 tracing::warn!("Login failed for user: {} (Invalid password)", payload.username);
             }
@@ -97,15 +126,21 @@ pub async fn logout() -> impl IntoResponse {
     get,
     path = "/api/auth/me",
     responses(
-        (status = 200, description = "Current user info")
+        (status = 200, description = "Current user info", body = AuthUser)
     ),
     security(
         ("jwt" = [])
     )
 )]
-pub async fn me() -> impl IntoResponse {
-    // Need middleware to extract claims. For now placeholder.
-    (StatusCode::OK, Json(json!({ "msg": "Me" })))
+pub async fn me(
+    axum::extract::Extension(user): axum::extract::Extension<Claims>,
+) -> impl IntoResponse {
+    let response = AuthUser {
+        username: user.sub,
+        role: user.role,
+    };
+
+    (StatusCode::OK, Json(response))
 }
 
 use bcrypt::{hash, DEFAULT_COST};

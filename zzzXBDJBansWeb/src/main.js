@@ -2,6 +2,7 @@ import { createApp } from 'vue'
 import './style.css'
 import App from './App.vue'
 import router from './router'
+import { useAuthStore } from './composables/useAuthStore'
 
 const loadConfig = async () => {
     try {
@@ -16,7 +17,10 @@ const loadConfig = async () => {
     }
 };
 
-loadConfig().then(() => {
+loadConfig().then(async () => {
+    const authStore = useAuthStore();
+    await authStore.checkAuth();
+
     createApp(App)
         .use(router)
         .mount('#app')

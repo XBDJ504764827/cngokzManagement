@@ -1,10 +1,20 @@
 import { ref, computed } from 'vue'
 import api from '../utils/api'
-import { useLogStore } from './useLogStore'
 
 // State
 const currentUser = ref(null)
 const adminList = ref([])
+
+const clearStoredAuth = () => {
+    localStorage.removeItem('token')
+    localStorage.removeItem('user')
+}
+
+const persistUser = (token, user) => {
+    localStorage.setItem('token', token)
+    localStorage.setItem('user', JSON.stringify(user))
+    currentUser.value = { ...user, token }
+}
 
 export const useAuthStore = () => {
 
@@ -13,9 +23,7 @@ export const useAuthStore = () => {
         try {
             const res = await api.post('/auth/login', { username, password })
             const { token, user } = res.data
-            localStorage.setItem('token', token)
-            localStorage.setItem('user', JSON.stringify(user)) // Simple cache
-            currentUser.value = { ...user, token }
+            persistUser(token, user)
             return { success: true, user }
         } catch (error) {
             console.error(error)
@@ -26,20 +34,20 @@ export const useAuthStore = () => {
     // Restore Session from LocalStorage
     const checkAuth = async () => {
         const token = localStorage.getItem('token')
-        const userStr = localStorage.getItem('user')
-        if (token && userStr) {
-            // Validate token with backend if strict, or just trust for UI state
-            // For rigorous check, call /api/auth/me
-            try {
-                // await api.get('/auth/me') 
-                currentUser.value = { ...JSON.parse(userStr), token }
-                return true
-            } catch (e) {
-                logout()
-                return false
-            }
+        if (!token) {
+            currentUser.value = null
+            return false
         }
-        return false
+
+        try {
+            const res = await api.get('/auth/me')
+            persistUser(token, res.data)
+            return true
+        } catch (e) {
+            currentUser.value = null
+            clearStoredAuth()
+            return false
+        }
     }
 
     const logout = async () => {
@@ -47,8 +55,7 @@ export const useAuthStore = () => {
             await api.post('/auth/logout')
         } catch (e) { /* ignore */ }
         currentUser.value = null
-        localStorage.removeItem('token')
-        localStorage.removeItem('user')
+        clearStoredAuth()
     }
 
     // --- Admin Management Actions ---

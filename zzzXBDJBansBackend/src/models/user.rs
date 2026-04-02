@@ -45,6 +45,13 @@ pub struct LoginRequest {
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct LoginResponse {
     pub token: String,
+    pub user: AuthUser,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
+pub struct AuthUser {
+    pub username: String,
+    pub role: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

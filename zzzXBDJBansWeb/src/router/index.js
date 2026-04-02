@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import LoginView from '../views/LoginView.vue'
 import DashboardLayout from '../layouts/DashboardLayout.vue'
+import { useAuthStore } from '../composables/useAuthStore'
 
 const router = createRouter({
     history: createWebHistory(import.meta.env.BASE_URL),
@@ -80,30 +81,30 @@ const router = createRouter({
     ],
 })
 
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to) => {
+    const authStore = useAuthStore()
     const token = localStorage.getItem('token')
-    const userStr = localStorage.getItem('user')
-    const user = userStr ? JSON.parse(userStr) : null
     const requiresAuth = to.matched.some(record => record.meta.requiresAuth)
     const requiresSuperAdmin = to.matched.some(record => record.meta.requiresSuperAdmin)
+    let isAuthenticated = Boolean(authStore.currentUser.value)
 
-    // 1. Protected Route Check
-    if (requiresAuth && !token) {
-        next('/')
+    if (token && !isAuthenticated) {
+        isAuthenticated = await authStore.checkAuth()
     }
-    // 2. Super Admin Check
-    else if (requiresSuperAdmin && user && user.role !== 'super_admin') {
-        // Redirect to default admin dashboard or show a toast/notification (not implemented here)
-        // Best to redirect to a safe admin page
-        next('/admin/community')
+
+    if (requiresAuth && !isAuthenticated) {
+        return '/'
     }
-    // 3. Login Page Check (Redirect if already logged in)
-    else if (to.path === '/' && token) {
-        next('/admin')
+
+    if (requiresSuperAdmin && authStore.currentUser.value?.role !== 'super_admin') {
+        return '/admin/community'
     }
-    else {
-        next()
+
+    if (to.path === '/' && isAuthenticated) {
+        return '/admin'
     }
+
+    return true
 })
 
 export default router
