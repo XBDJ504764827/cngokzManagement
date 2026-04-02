@@ -57,3 +57,17 @@ pub struct UpdateBanRequest {
     pub duration: Option<String>,
     pub status: Option<String>,
 }
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct BanListQuery {
+    pub page: Option<i64>,
+    pub page_size: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct PaginatedBanResponse {
+    pub items: Vec<Ban>,
+    pub total: i64,
+    pub page: i64,
+    pub page_size: i64,
+}

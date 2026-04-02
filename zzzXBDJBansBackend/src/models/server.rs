@@ -23,12 +23,29 @@ pub struct Server {
     pub verification_enabled: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
+pub struct ServerSummary {
+    pub id: i64,
+    pub group_id: i64,
+    pub name: String,
+    pub ip: String,
+    pub port: i32,
+    pub created_at: Option<DateTime<Utc>>,
+    pub verification_enabled: bool,
+}
+
 // Responses often group servers by group
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct GroupWithServers {
     pub id: i64,
     pub name: String,
-    pub servers: Vec<Server>,
+    pub servers: Vec<ServerSummary>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ServerStatusSummary {
+    pub server_id: i64,
+    pub status: String,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]

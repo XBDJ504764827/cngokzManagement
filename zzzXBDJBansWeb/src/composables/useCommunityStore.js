@@ -5,51 +5,38 @@ import api from '../utils/api'
 const serverGroups = ref([])
 
 export const useCommunityStore = () => {
+    const mapServerGroup = (groups) => groups.map(g => ({
+        ...g,
+        servers: g.servers.map(s => ({
+            ...s,
+            status: s.status || 'unknown'
+        }))
+    }))
 
     // Fetch
     const fetchServerGroups = async () => {
         try {
             const res = await api.get('/server-groups')
-            // Backend returns [{id, name, servers: [...]}] based on our handler
-            serverGroups.value = res.data.map(g => ({
-                ...g,
-                servers: g.servers.map(s => ({
-                    ...s,
-                    status: 'unknown' // Default status until checked?
-                }))
-            }))
-
-            // Check status for all servers asynchronously
-            checkAllStatuses()
+            serverGroups.value = mapServerGroup(res.data)
+            await refreshServerStatuses()
 
         } catch (e) {
             console.error(e)
         }
     }
 
-    // Helper to check status for all loaded servers
-    const checkAllStatuses = async () => {
-        for (const group of serverGroups.value) {
-            for (const server of group.servers) {
-                // Don't await in loop to do parallel? 
-                // Better to map promises.
-                // But for simplicity in ref loop:
-                checkOneServerStatus(group.id, server)
-            }
-        }
-    }
-
-    const checkOneServerStatus = async (groupId, server) => {
+    const refreshServerStatuses = async () => {
         try {
-            await api.post('/servers/check', {
-                ip: server.ip,
-                port: server.port,
-                rcon_password: server.rcon_password
-            })
-            // Update status to online
-            updateLocalStatus(groupId, server.id, 'online')
+            const res = await api.get('/server-statuses')
+            const statuses = new Map(res.data.map(item => [item.server_id, item.status]))
+
+            for (const group of serverGroups.value) {
+                for (const server of group.servers) {
+                    server.status = statuses.get(server.id) || 'unknown'
+                }
+            }
         } catch (e) {
-            updateLocalStatus(groupId, server.id, 'offline')
+            console.error(e)
         }
     }
 
@@ -95,7 +82,11 @@ export const useCommunityStore = () => {
 
     const updateServer = async (groupId, serverId, serverData) => {
         try {
-            await api.put(`/servers/${serverId}`, serverData)
+            const payload = { ...serverData }
+            if (!payload.rcon_password) {
+                delete payload.rcon_password
+            }
+            await api.put(`/servers/${serverId}`, payload)
             await fetchServerGroups()
             return { success: true }
         } catch (e) {
@@ -159,6 +150,7 @@ export const useCommunityStore = () => {
         serverGroups,
         hasCommunity,
         fetchServerGroups,
+        refreshServerStatuses,
         addServerGroup,
         removeServerGroup,
         addServer,

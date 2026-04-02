@@ -4,6 +4,11 @@ import api from '../utils/api'
 // State
 const bans = ref([])
 const publicBans = ref([])
+const banPagination = ref({
+    page: 1,
+    pageSize: 25,
+    total: 0
+})
 
 export const useBanStore = () => {
 
@@ -24,10 +29,20 @@ export const useBanStore = () => {
         serverId: b.server_id
     })
 
-    const fetchBans = async () => {
+    const fetchBans = async ({ page = banPagination.value.page, pageSize = banPagination.value.pageSize } = {}) => {
         try {
-            const res = await api.get('/bans')
-            bans.value = res.data.map(mapBanFromBackend)
+            const res = await api.get('/bans', {
+                params: {
+                    page,
+                    page_size: pageSize
+                }
+            })
+            bans.value = res.data.items.map(mapBanFromBackend)
+            banPagination.value = {
+                page: res.data.page,
+                pageSize: res.data.page_size,
+                total: res.data.total
+            }
         } catch (e) {
             console.error(e)
         }
@@ -60,8 +75,12 @@ export const useBanStore = () => {
                 duration: banData.duration,
                 admin_name: banData.adminName
             }
-            await api.post('/bans', payload)
-            await fetchBans()
+            const res = await api.post('/bans', payload)
+            const createdBan = mapBanFromBackend(res.data)
+            banPagination.value.total += 1
+            if (banPagination.value.page === 1) {
+                bans.value = [createdBan, ...bans.value].slice(0, banPagination.value.pageSize)
+            }
             return { success: true }
         } catch (e) {
             console.error(e)
@@ -77,8 +96,9 @@ export const useBanStore = () => {
             // Backend has `delete` handler too, but that's HARD delete.
             // "解除封禁" usually means setting status to unbanned.
             // Let's use PUT update status.
-            await api.put(`/bans/${id}`, { status: 'unbanned' })
-            await fetchBans()
+            const res = await api.put(`/bans/${id}`, { status: 'unbanned' })
+            const updatedBan = mapBanFromBackend(res.data)
+            bans.value = bans.value.map(item => item.id === id ? updatedBan : item)
             return true
         } catch (e) {
             console.error(e)
@@ -99,8 +119,9 @@ export const useBanStore = () => {
             if (updatedData.reason) payload.reason = updatedData.reason
             if (updatedData.duration) payload.duration = updatedData.duration
 
-            await api.put(`/bans/${id}`, payload)
-            await fetchBans()
+            const res = await api.put(`/bans/${id}`, payload)
+            const updatedBan = mapBanFromBackend(res.data)
+            bans.value = bans.value.map(item => item.id === id ? updatedBan : item)
             return true
         } catch (e) {
             console.error(e)
@@ -112,7 +133,19 @@ export const useBanStore = () => {
     const deleteBanRecord = async (id) => {
         try {
             await api.delete(`/bans/${id}`)
-            await fetchBans()
+            const hadRecord = bans.value.some(item => item.id === id)
+            bans.value = bans.value.filter(item => item.id !== id)
+            if (hadRecord) {
+                banPagination.value.total = Math.max(0, banPagination.value.total - 1)
+                if (bans.value.length === 0 && banPagination.value.page > 1) {
+                    await fetchBans({ page: banPagination.value.page - 1 })
+                } else {
+                    const visibleCapacityBefore = banPagination.value.page * banPagination.value.pageSize
+                    if (bans.value.length < banPagination.value.pageSize && banPagination.value.total >= visibleCapacityBefore) {
+                        await fetchBans({ page: banPagination.value.page })
+                    }
+                }
+            }
             return true
         } catch (e) {
             console.error(e)
@@ -123,6 +156,7 @@ export const useBanStore = () => {
     return {
         bans,
         publicBans,
+        banPagination,
         fetchBans,
         fetchPublicBans,
         addBan,

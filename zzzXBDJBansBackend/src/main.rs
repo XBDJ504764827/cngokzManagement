@@ -54,6 +54,7 @@ mod services;
         handlers::whitelist::list_public_whitelist,
         handlers::whitelist::get_player_info,
         handlers::server::list_server_groups,
+        handlers::server::list_server_statuses,
         handlers::server::create_group,
         handlers::server::delete_group,
         handlers::server::create_server,
@@ -81,6 +82,7 @@ mod services;
             models::user::AuthUser,
             models::user::ChangePasswordRequest,
             models::ban::Ban,
+            models::ban::PaginatedBanResponse,
             models::ban::PublicBan,
             models::ban::CreateBanRequest,
             models::ban::CreateBanRequest,
@@ -96,6 +98,8 @@ mod services;
             models::server::ServerGroup,
             models::server::GroupWithServers,
             models::server::Server,
+            models::server::ServerSummary,
+            models::server::ServerStatusSummary,
             models::server::CreateGroupRequest,
             models::server::CreateServerRequest,
             models::server::UpdateServerRequest,
@@ -209,6 +213,7 @@ async fn main() {
         // Server Management
         .route("/api/server-groups", get(handlers::server::list_server_groups).post(handlers::server::create_group))
         .route("/api/server-groups/:id", axum::routing::delete(handlers::server::delete_group))
+        .route("/api/server-statuses", get(handlers::server::list_server_statuses))
         .route("/api/servers", axum::routing::post(handlers::server::create_server))
         .route("/api/servers/:id", axum::routing::put(handlers::server::update_server).delete(handlers::server::delete_server))
         .route("/api/servers/check", axum::routing::post(handlers::server::check_server_status))

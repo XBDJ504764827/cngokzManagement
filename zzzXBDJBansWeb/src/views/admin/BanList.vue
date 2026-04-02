@@ -7,14 +7,14 @@ import BanModal from '../../components/BanModal.vue'
 import ConfirmModal from '../../components/ConfirmModal.vue'
 
 import { useToast } from '../../composables/useToast'
-const { bans, addBan, removeBan, updateBan, fetchBans, deleteBanRecord } = useBanStore()
+const { bans, banPagination, addBan, removeBan, updateBan, fetchBans, deleteBanRecord } = useBanStore()
 const { currentUser, isSystemAdmin } = useAuthStore()
 const { serverGroups, fetchServerGroups } = useCommunityStore()
 const toast = useToast()
 
 onMounted(async () => {
     await Promise.all([
-        fetchBans(),
+        fetchBans({ page: 1 }),
         fetchServerGroups()
     ])
 })
@@ -71,6 +71,22 @@ const handleConfirm = () => {
 }
 
 const hasBans = computed(() => bans.value.length > 0)
+const totalPages = computed(() => Math.max(1, Math.ceil(banPagination.value.total / banPagination.value.pageSize)))
+const canGoPrev = computed(() => banPagination.value.page > 1)
+const canGoNext = computed(() => banPagination.value.page < totalPages.value)
+const currentRangeStart = computed(() => {
+    if (banPagination.value.total === 0) return 0
+    return (banPagination.value.page - 1) * banPagination.value.pageSize + 1
+})
+const currentRangeEnd = computed(() => {
+    if (banPagination.value.total === 0) return 0
+    return Math.min(banPagination.value.page * banPagination.value.pageSize, banPagination.value.total)
+})
+
+const goToPage = async (page) => {
+    if (page < 1 || page > totalPages.value || page === banPagination.value.page) return
+    await fetchBans({ page })
+}
 
 const openAddModal = () => {
     editMode.value = false
@@ -188,7 +204,10 @@ const getBanTypeLabel = (type) => {
     <div class="flex justify-between items-center">
       <div>
         <h1 class="text-2xl font-bold text-slate-900 dark:text-white">封禁管理</h1>
-        <p class="text-slate-500 dark:text-gray-400 text-sm mt-1">管理游戏服务器的玩家封禁记录</p>
+        <p class="text-slate-500 dark:text-gray-400 text-sm mt-1">
+          管理游戏服务器的玩家封禁记录
+          <span class="ml-2">共 {{ banPagination.total }} 条</span>
+        </p>
       </div>
       <button 
         @click="openAddModal"
@@ -376,6 +395,30 @@ const getBanTypeLabel = (type) => {
                     </template>
                 </tbody>
             </table>
+        </div>
+        <div class="flex items-center justify-between px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50/80 dark:bg-slate-900/40">
+            <p class="text-sm text-slate-500 dark:text-gray-400">
+                显示 {{ currentRangeStart }} - {{ currentRangeEnd }}，共 {{ banPagination.total }} 条
+            </p>
+            <div class="flex items-center gap-2">
+                <button
+                    @click="goToPage(banPagination.page - 1)"
+                    :disabled="!canGoPrev"
+                    class="px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-gray-700 text-slate-600 dark:text-slate-300 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-100 dark:hover:bg-slate-800"
+                >
+                    上一页
+                </button>
+                <span class="text-sm text-slate-500 dark:text-gray-400">
+                    第 {{ banPagination.page }} / {{ totalPages }} 页
+                </span>
+                <button
+                    @click="goToPage(banPagination.page + 1)"
+                    :disabled="!canGoNext"
+                    class="px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-gray-700 text-slate-600 dark:text-slate-300 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-100 dark:hover:bg-slate-800"
+                >
+                    下一页
+                </button>
+            </div>
         </div>
     </div>
 

@@ -40,7 +40,7 @@ watch(() => props.modelValue, (val) => {
     if (props.initialData) {
       form.value = { 
           ...props.initialData,
-          rcon_password: props.initialData.rcon_password || '',
+          rcon_password: '',
           verification_enabled: props.initialData.verification_enabled !== false // Default true if undefined
       }
     } else {
@@ -73,6 +73,10 @@ const handleSave = async () => {
   const payload = {
       ...form.value,
       port: parseInt(form.value.port) // Ensure Int
+  }
+
+  if (isEditMode.value && !payload.rcon_password) {
+      delete payload.rcon_password
   }
 
   let res;
@@ -193,7 +197,9 @@ const handleCheck = async () => {
                 {{ checkStatus.loading ? '连接中...' : '测试连接' }}
               </button>
            </div>
-            <p class="text-slate-500 text-xs mt-1">仅用于服务器通讯，不会公开显示。</p>
+            <p class="text-slate-500 text-xs mt-1">
+              {{ isEditMode ? '留空则保持当前 RCON 密码不变。' : '仅用于服务器通讯，不会公开显示。' }}
+            </p>
             
             <!-- Check Result -->
             <div v-if="checkStatus.message" class="mt-2 text-sm flex items-center gap-2" :class="checkStatus.success ? 'text-green-400' : 'text-red-400'">

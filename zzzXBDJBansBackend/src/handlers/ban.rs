@@ -6,7 +6,7 @@ use axum::{
 };
 use std::sync::Arc;
 use crate::AppState;
-use crate::models::ban::{Ban, PublicBan, CreateBanRequest, UpdateBanRequest};
+use crate::models::ban::{Ban, BanListQuery, PaginatedBanResponse, PublicBan, CreateBanRequest, UpdateBanRequest};
 use crate::handlers::auth::Claims;
 use crate::utils::{log_admin_action, calculate_expires_at};
 use chrono::Utc;
@@ -22,8 +22,12 @@ pub struct BanFilter {
 #[utoipa::path(
     get,
     path = "/api/bans",
+    params(
+        ("page" = Option<i64>, Query, description = "Page number, starts at 1"),
+        ("page_size" = Option<i64>, Query, description = "Page size, max 100")
+    ),
     responses(
-        (status = 200, description = "List all bans", body = Vec<Ban>)
+        (status = 200, description = "List bans", body = PaginatedBanResponse)
     ),
     security(
         ("jwt" = [])
@@ -31,18 +35,43 @@ pub struct BanFilter {
 )]
 pub async fn list_bans(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<BanListQuery>,
 ) -> impl IntoResponse {
     // Lazy expire check: Update all active bans that have expired
     let _ = sqlx::query("UPDATE bans SET status = 'expired' WHERE status = 'active' AND expires_at < NOW()")
         .execute(&state.db)
         .await;
 
-    let bans = sqlx::query_as::<_, Ban>("SELECT * FROM bans ORDER BY created_at DESC")
+    let page = query.page.unwrap_or(1).max(1);
+    let page_size = query.page_size.unwrap_or(25).clamp(1, 100);
+    let offset = (page - 1) * page_size;
+
+    let total = match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM bans")
+        .fetch_one(&state.db)
+        .await
+    {
+        Ok(total) => total,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let bans = sqlx::query_as::<_, Ban>(
+        "SELECT * FROM bans ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+    )
+        .bind(page_size)
+        .bind(offset)
         .fetch_all(&state.db)
         .await;
 
     match bans {
-        Ok(data) => (StatusCode::OK, Json(data)).into_response(),
+        Ok(data) => {
+            let response = PaginatedBanResponse {
+                items: data,
+                total,
+                page,
+                page_size,
+            };
+            (StatusCode::OK, Json(response)).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -181,57 +210,8 @@ pub async fn check_ban(
                 }
             }
 
-            // HIT! IP is banned, and user has no personal ban.
-            tracing::info!("CHECK_BAN: IP Ban Hit for new identity! Triggering Auto-Ban. IP: {}, New SteamID: {}", ip, steam_id);
-
-            // Create NEW Ban Record
-            let reason = "同IP关联封禁 (Different account repeated IP login)".to_string();
-            // Inherit expiration from the parent IP ban
-            let expires_at = b.expires_at; 
-            
-            let insert_result = sqlx::query_scalar::<_, i64>(
-                "INSERT INTO bans (name, steam_id, steam_id_64, ip, ban_type, reason, duration, admin_name, expires_at, created_at, status, server_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), 'active', $10) RETURNING id"
-            )
-            .bind("Auto-Banned") 
-            .bind(&steam_id)
-            .bind(&steam_id_64)
-            .bind(&ip)
-            .bind("account") 
-            .bind(&reason)
-            .bind(&b.duration) 
-            .bind("System (IP Match)")
-            .bind(expires_at)
-            .bind(b.server_id)
-            .fetch_one(&state.db)
-            .await;
-
-            match insert_result {
-                Ok(new_id) => {
-                    tracing::info!("CHECK_BAN: Auto-Ban Created Successfully. New ID: {}", new_id);
-                    let new_ban = Ban {
-                        id: new_id,
-                        name: "Auto-Banned".to_string(),
-                        steam_id: steam_id,
-                        steam_id_3: None,
-                        steam_id_64: Some(steam_id_64.clone()),
-                        ip: ip,
-                        ban_type: "account".to_string(),
-                        reason: Some(reason),
-                        duration: b.duration,
-                        status: "active".to_string(),
-                        admin_name: Some("System (IP Match)".to_string()),
-                        created_at: Some(Utc::now()),
-                        expires_at: expires_at,
-                        server_id: b.server_id
-                    };
-                    return (StatusCode::OK, Json(new_ban)).into_response();
-                },
-                Err(e) => {
-                    tracing::error!("CHECK_BAN: Failed to auto-create ban: {}", e);
-                    // If insert fails, still return the IP ban so they are blocked
-                    return (StatusCode::OK, Json(b)).into_response();
-                }
-            }
+            // Return the matched IP ban as a read-only result. This endpoint should not mutate state.
+            return (StatusCode::OK, Json(b)).into_response();
         },
         Ok(None) => {
 
@@ -386,8 +366,8 @@ pub async fn create_ban(
     let steam_id_3 = steam_service.id64_to_id3(&steam_id_64)
         .unwrap_or_default();
 
-    let result = sqlx::query(
-        "INSERT INTO bans (name, steam_id, steam_id_3, steam_id_64, ip, ban_type, reason, duration, admin_name, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
+    let result = sqlx::query_as::<_, Ban>(
+        "INSERT INTO bans (name, steam_id, steam_id_3, steam_id_64, ip, ban_type, reason, duration, admin_name, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *"
     )
     .bind(&payload.name)
     .bind(&steam_id_2)
@@ -399,11 +379,11 @@ pub async fn create_ban(
     .bind(&payload.duration)
     .bind(&payload.admin_name)
     .bind(expires_at)
-    .execute(&state.db)
+    .fetch_one(&state.db)
     .await;
 
     match result {
-        Ok(_) => {
+        Ok(created_ban) => {
             let _ = log_admin_action(
                 &state.db, 
                 &user.sub, 
@@ -411,7 +391,7 @@ pub async fn create_ban(
                 &format!("User: {}, SteamID64: {}", payload.name, steam_id_64), 
                 &format!("Reason: {}, Duration: {}", payload.reason.clone().unwrap_or_default(), payload.duration)
             ).await;
-            (StatusCode::CREATED, Json("Ban created")).into_response()
+            (StatusCode::CREATED, Json(created_ban)).into_response()
         },
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
@@ -438,43 +418,43 @@ pub async fn update_ban(
     Path(id): Path<i64>,
     Json(payload): Json<UpdateBanRequest>,
 ) -> impl IntoResponse {
-    if let Some(status) = payload.status {
-        let _ = sqlx::query("UPDATE bans SET status = $1 WHERE id = $2")
-            .bind(status).bind(id)
-            .execute(&state.db).await;
-    }
-    // ... (other fields name, steam_id etc same as before)
-    if let Some(name) = payload.name {
-         let _ = sqlx::query("UPDATE bans SET name = $1 WHERE id = $2")
-            .bind(name).bind(id)
-            .execute(&state.db).await;
-    }
-    if let Some(steam_id) = payload.steam_id {
-         let _ = sqlx::query("UPDATE bans SET steam_id = $1 WHERE id = $2")
-            .bind(steam_id).bind(id)
-            .execute(&state.db).await;
-    }
-    if let Some(ip) = payload.ip {
-         let _ = sqlx::query("UPDATE bans SET ip = $1 WHERE id = $2")
-            .bind(ip).bind(id)
-            .execute(&state.db).await;
-    }
-    if let Some(ban_type) = payload.ban_type {
-         let _ = sqlx::query("UPDATE bans SET ban_type = $1 WHERE id = $2")
-            .bind(ban_type).bind(id)
-            .execute(&state.db).await;
-    }
-    if let Some(reason) = payload.reason {
-         let _ = sqlx::query("UPDATE bans SET reason = $1 WHERE id = $2")
-            .bind(reason).bind(id)
-            .execute(&state.db).await;
-    }
-    if let Some(duration) = payload.duration {
-         let expires_at = calculate_expires_at(&duration);
-         let _ = sqlx::query("UPDATE bans SET duration = $1, expires_at = $2 WHERE id = $3")
-            .bind(duration).bind(expires_at).bind(id)
-            .execute(&state.db).await;
-    }
+    let current = match sqlx::query_as::<_, Ban>("SELECT * FROM bans WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await
+    {
+        Ok(Some(ban)) => ban,
+        Ok(None) => return (StatusCode::NOT_FOUND, Json("Ban not found")).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let name = payload.name.unwrap_or(current.name);
+    let steam_id = payload.steam_id.unwrap_or(current.steam_id);
+    let ip = payload.ip.unwrap_or(current.ip);
+    let ban_type = payload.ban_type.unwrap_or(current.ban_type);
+    let reason = payload.reason.or(current.reason);
+    let duration = payload.duration.unwrap_or(current.duration);
+    let status = payload.status.unwrap_or(current.status);
+    let expires_at = calculate_expires_at(&duration);
+
+    let updated_ban = match sqlx::query_as::<_, Ban>(
+        "UPDATE bans SET name = $1, steam_id = $2, ip = $3, ban_type = $4, reason = $5, duration = $6, status = $7, expires_at = $8 WHERE id = $9 RETURNING *"
+    )
+    .bind(&name)
+    .bind(&steam_id)
+    .bind(&ip)
+    .bind(&ban_type)
+    .bind(&reason)
+    .bind(&duration)
+    .bind(&status)
+    .bind(expires_at)
+    .bind(id)
+    .fetch_one(&state.db)
+    .await
+    {
+        Ok(ban) => ban,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
 
     let _ = log_admin_action(
         &state.db,
@@ -484,7 +464,7 @@ pub async fn update_ban(
         "Updated ban details"
     ).await;
 
-    (StatusCode::OK, Json("Ban updated")).into_response()
+    (StatusCode::OK, Json(updated_ban)).into_response()
 }
 
 #[utoipa::path(

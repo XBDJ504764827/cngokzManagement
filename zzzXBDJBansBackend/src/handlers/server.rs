@@ -4,9 +4,10 @@ use axum::{
     response::IntoResponse,
 };
 use std::sync::Arc;
+use futures::future::join_all;
 use crate::AppState;
 use crate::models::server::{
-    ServerGroup, Server, GroupWithServers, 
+    ServerGroup, Server, ServerSummary, ServerStatusSummary, GroupWithServers,
     CreateGroupRequest, CreateServerRequest, UpdateServerRequest, CheckServerRequest
 };
 use crate::handlers::auth::Claims;
@@ -43,15 +44,14 @@ pub async fn list_server_groups(
     // Combine
     let mut result = Vec::new();
     for g in groups {
-        let group_servers: Vec<Server> = servers.iter()
+        let group_servers: Vec<ServerSummary> = servers.iter()
             .filter(|s| s.group_id == g.id)
-            .map(|s| Server {
+            .map(|s| ServerSummary {
                 id: s.id,
                 group_id: s.group_id,
                 name: s.name.clone(),
                 ip: s.ip.clone(),
                 port: s.port,
-                rcon_password: s.rcon_password.clone(),
                 created_at: s.created_at,
                 verification_enabled: s.verification_enabled,
             })
@@ -65,6 +65,48 @@ pub async fn list_server_groups(
     }
 
     (StatusCode::OK, Json(result)).into_response()
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/server-statuses",
+    responses(
+        (status = 200, description = "List server online statuses", body = Vec<ServerStatusSummary>)
+    ),
+    security(
+        ("jwt" = [])
+    )
+)]
+pub async fn list_server_statuses(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let servers = match sqlx::query_as::<_, Server>("SELECT * FROM servers")
+        .fetch_all(&state.db)
+        .await
+    {
+        Ok(servers) => servers,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let checks = servers.into_iter().map(|server| async move {
+        let status = if let Some(password) = server.rcon_password.clone() {
+            let address = format!("{}:{}", server.ip, server.port);
+            match check_rcon(&address, &password).await {
+                Ok(_) => "online",
+                Err(_) => "offline",
+            }
+        } else {
+            "offline"
+        };
+
+        ServerStatusSummary {
+            server_id: server.id,
+            status: status.to_string(),
+        }
+    });
+
+    let statuses = join_all(checks).await;
+    (StatusCode::OK, Json(statuses)).into_response()
 }
 
 #[utoipa::path(
@@ -189,23 +231,49 @@ pub async fn update_server(
     Path(id): Path<i64>,
     Json(payload): Json<UpdateServerRequest>,
 ) -> impl IntoResponse {
-    if let Some(name) = payload.name {
-        let _ = sqlx::query("UPDATE servers SET name = $1 WHERE id = $2").bind(name).bind(id).execute(&state.db).await;
-    }
-    if let Some(ip) = payload.ip {
-        let _ = sqlx::query("UPDATE servers SET ip = $1 WHERE id = $2").bind(ip).bind(id).execute(&state.db).await;
-    }
-    if let Some(port) = payload.port {
-        let _ = sqlx::query("UPDATE servers SET port = $1 WHERE id = $2").bind(port).bind(id).execute(&state.db).await;
-    }
-     if let Some(pwd) = payload.rcon_password {
-        let _ = sqlx::query("UPDATE servers SET rcon_password = $1 WHERE id = $2").bind(pwd).bind(id).execute(&state.db).await;
-    }
-    if let Some(verif) = payload.verification_enabled {
-        let _ = sqlx::query("UPDATE servers SET verification_enabled = $1 WHERE id = $2").bind(verif).bind(id).execute(&state.db).await;
+    let mut tx = match state.db.begin().await {
+        Ok(tx) => tx,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let existing = match sqlx::query_as::<_, Server>("SELECT * FROM servers WHERE id = $1 FOR UPDATE")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+    {
+        Ok(Some(server)) => server,
+        Ok(None) => return (StatusCode::NOT_FOUND, Json("Server not found")).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let name = payload.name.unwrap_or(existing.name);
+    let ip = payload.ip.unwrap_or(existing.ip);
+    let port = payload.port.unwrap_or(existing.port);
+    let rcon_password = payload.rcon_password.or(existing.rcon_password);
+    let verification_enabled = payload
+        .verification_enabled
+        .unwrap_or(existing.verification_enabled);
+
+    if let Err(e) = sqlx::query(
+        "UPDATE servers SET name = $1, ip = $2, port = $3, rcon_password = $4, verification_enabled = $5 WHERE id = $6"
+    )
+    .bind(&name)
+    .bind(&ip)
+    .bind(port)
+    .bind(&rcon_password)
+    .bind(verification_enabled)
+    .bind(id)
+    .execute(&mut *tx)
+    .await
+    {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }
 
-     let _ = log_admin_action(&state.db, &user.sub, "update_server", &format!("ID: {}", id), "Updated server").await;
+    if let Err(e) = tx.commit().await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+
+    let _ = log_admin_action(&state.db, &user.sub, "update_server", &format!("ID: {}", id), "Updated server").await;
 
     (StatusCode::OK, Json("Server updated")).into_response()
 }
