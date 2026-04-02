@@ -1,15 +1,15 @@
+use crate::handlers::auth::Claims;
+use crate::models::user::{Admin, CreateAdminRequest, UpdateAdminRequest};
+use crate::utils::log_admin_action;
+use crate::AppState;
 use axum::{
     extract::{Extension, Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
-use std::sync::Arc;
-use crate::AppState;
-use crate::models::user::{Admin, CreateAdminRequest, UpdateAdminRequest};
-use crate::handlers::auth::Claims;
-use crate::utils::log_admin_action;
 use bcrypt::{hash, DEFAULT_COST};
+use std::sync::Arc;
 
 fn is_super_admin(user: &Claims) -> bool {
     user.role == "super_admin"
@@ -92,7 +92,11 @@ pub async fn create_admin(
     Json(payload): Json<CreateAdminRequest>,
 ) -> impl IntoResponse {
     if !is_super_admin(&user) {
-        return (StatusCode::FORBIDDEN, Json("Only super admins can create admins")).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json("Only super admins can create admins"),
+        )
+            .into_response();
     }
 
     if !is_valid_admin_role(&payload.role) {
@@ -107,12 +111,14 @@ pub async fn create_admin(
     // 解析 SteamID 为各种格式
     let (steam_id_2, steam_id_3, steam_id_64) = if let Some(ref input_steam_id) = payload.steam_id {
         let steam_service = state.steam_service.as_ref();
-        let id64 = steam_service.resolve_steam_id(input_steam_id).await
+        let id64 = steam_service
+            .resolve_steam_id(input_steam_id)
+            .await
             .unwrap_or_else(|| input_steam_id.clone());
-        
+
         let id2 = steam_service.id64_to_id2(&id64);
         let id3 = steam_service.id64_to_id3(&id64);
-        
+
         (id2, id3, Some(id64))
     } else {
         (None, None, None)
@@ -138,10 +144,11 @@ pub async fn create_admin(
                 &user.sub,
                 "create_admin",
                 &payload.username,
-                &format!("Role: {}", payload.role)
-            ).await;
+                &format!("Role: {}", payload.role),
+            )
+            .await;
             (StatusCode::CREATED, Json("Admin created")).into_response()
-        },
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -174,7 +181,11 @@ pub async fn update_admin(
     let actor_is_super_admin = is_super_admin(&user);
 
     if !actor_is_super_admin && actor_id != id {
-        return (StatusCode::FORBIDDEN, Json("You can only update your own account")).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json("You can only update your own account"),
+        )
+            .into_response();
     }
 
     let existing = match sqlx::query_as::<_, Admin>("SELECT * FROM admins WHERE id = $1")
@@ -190,7 +201,11 @@ pub async fn update_admin(
     if !actor_is_super_admin {
         if let Some(role) = &payload.role {
             if role != &existing.role {
-                return (StatusCode::FORBIDDEN, Json("Only super admins can change roles")).into_response();
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json("Only super admins can change roles"),
+                )
+                    .into_response();
             }
         }
     } else if let Some(role) = &payload.role {
@@ -208,7 +223,9 @@ pub async fn update_admin(
     let password = match payload.password {
         Some(password) => match hash(password, DEFAULT_COST) {
             Ok(hashed) => hashed,
-            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(e.to_string())).into_response(),
+            Err(e) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(e.to_string())).into_response()
+            }
         },
         None => existing.password.clone(),
     };
@@ -262,8 +279,9 @@ pub async fn update_admin(
         &user.sub,
         "update_admin",
         &format!("AdminID: {}", id),
-        "Updated admin details"
-    ).await;
+        "Updated admin details",
+    )
+    .await;
 
     (StatusCode::OK, Json("Admin updated")).into_response()
 }
@@ -288,7 +306,11 @@ pub async fn delete_admin(
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
     if !is_super_admin(&user) {
-        return (StatusCode::FORBIDDEN, Json("Only super admins can delete admins")).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json("Only super admins can delete admins"),
+        )
+            .into_response();
     }
 
     let actor_id = match resolve_actor_admin_id(&state, &user).await {
@@ -297,7 +319,11 @@ pub async fn delete_admin(
     };
 
     if actor_id == id {
-        return (StatusCode::BAD_REQUEST, Json("You cannot delete your own account")).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json("You cannot delete your own account"),
+        )
+            .into_response();
     }
 
     let result = sqlx::query("DELETE FROM admins WHERE id = $1")
@@ -307,15 +333,16 @@ pub async fn delete_admin(
 
     match result {
         Ok(_) => {
-             let _ = log_admin_action(
+            let _ = log_admin_action(
                 &state.db,
                 &user.sub,
                 "delete_admin",
                 &format!("AdminID: {}", id),
-                "Deleted admin"
-            ).await;
+                "Deleted admin",
+            )
+            .await;
             (StatusCode::OK, Json("Admin deleted")).into_response()
-        },
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

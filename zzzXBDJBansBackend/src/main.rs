@@ -2,20 +2,20 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use utoipa::OpenApi;
 use dotenvy::dotenv;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tower_http::trace::TraceLayer;
 use tower_http::cors::CorsLayer;
+use tower_http::trace::TraceLayer;
+use utoipa::OpenApi;
 
+mod bg_task;
 mod db;
 mod handlers;
-mod models;
 mod middleware;
-mod utils;
-mod bg_task;
+mod models;
 mod services;
+mod utils;
 
 #[derive(OpenApi)]
 #[openapi(
@@ -84,6 +84,7 @@ mod services;
             models::ban::Ban,
             models::ban::PaginatedBanResponse,
             models::ban::PublicBan,
+            models::ban::PaginatedPublicBanResponse,
             models::ban::CreateBanRequest,
             models::ban::CreateBanRequest,
             models::ban::UpdateBanRequest,
@@ -166,12 +167,13 @@ async fn main() {
     ensure_bootstrap_admin(&pool).await;
 
     let client = reqwest::Client::new();
-    let steam_service = Arc::new(crate::services::steam_api::SteamService::new(client.clone()));
-    let global_ban_service = Arc::new(
-        crate::services::global_ban_cache::GlobalBanCacheService::new(client.clone())
-    );
+    let steam_service = Arc::new(crate::services::steam_api::SteamService::new(
+        client.clone(),
+    ));
+    let global_ban_service =
+        Arc::new(crate::services::global_ban_cache::GlobalBanCacheService::new(client.clone()));
 
-    let state = Arc::new(AppState { 
+    let state = Arc::new(AppState {
         db: pool,
         client,
         steam_service,
@@ -189,52 +191,140 @@ async fn main() {
         crate::services::verification_worker::start_verification_worker(
             verif_state.db.clone(),
             verif_state.steam_service.clone(),
-        ).await;
+        )
+        .await;
     });
 
     let protected_routes = Router::new()
         .route("/api/auth/me", get(handlers::auth::me))
-        .route("/api/auth/logout", axum::routing::post(handlers::auth::logout))
-        .route("/api/auth/change-password", axum::routing::post(handlers::auth::change_password))
+        .route(
+            "/api/auth/logout",
+            axum::routing::post(handlers::auth::logout),
+        )
+        .route(
+            "/api/auth/change-password",
+            axum::routing::post(handlers::auth::change_password),
+        )
         // Admins
-        .route("/api/admins", get(handlers::admin::list_admins).post(handlers::admin::create_admin))
-        .route("/api/admins/:id", axum::routing::put(handlers::admin::update_admin).delete(handlers::admin::delete_admin))
+        .route(
+            "/api/admins",
+            get(handlers::admin::list_admins).post(handlers::admin::create_admin),
+        )
+        .route(
+            "/api/admins/:id",
+            axum::routing::put(handlers::admin::update_admin).delete(handlers::admin::delete_admin),
+        )
         // Bans
-        .route("/api/bans", get(handlers::ban::list_bans).post(handlers::ban::create_ban))
-        .route("/api/bans/:id", axum::routing::put(handlers::ban::update_ban).delete(handlers::ban::delete_ban))
+        .route(
+            "/api/bans",
+            get(handlers::ban::list_bans).post(handlers::ban::create_ban),
+        )
+        .route(
+            "/api/bans/:id",
+            axum::routing::put(handlers::ban::update_ban).delete(handlers::ban::delete_ban),
+        )
         .route("/api/check_ban", get(handlers::ban::check_ban))
-        .route("/api/check_global_ban", get(handlers::ban::check_global_ban))
-        .route("/api/check_global_ban/bulk", post(handlers::ban::check_global_ban_bulk))
+        .route(
+            "/api/check_global_ban",
+            get(handlers::ban::check_global_ban),
+        )
+        .route(
+            "/api/check_global_ban/bulk",
+            post(handlers::ban::check_global_ban_bulk),
+        )
         // Logs
-        .route("/api/logs", get(handlers::log::list_logs).post(handlers::log::create_log))
+        .route(
+            "/api/logs",
+            get(handlers::log::list_logs).post(handlers::log::create_log),
+        )
         // Interrupt Pause
-        .route("/api/interrupt-pause", get(handlers::interrupt_pause::list_interrupt_pause_snapshots))
-        .route("/api/interrupt-pause/:id/approve", axum::routing::put(handlers::interrupt_pause::approve_interrupt_pause_snapshot))
-        .route("/api/interrupt-pause/:id/reject", axum::routing::put(handlers::interrupt_pause::reject_interrupt_pause_snapshot))
-
+        .route(
+            "/api/interrupt-pause",
+            get(handlers::interrupt_pause::list_interrupt_pause_snapshots),
+        )
+        .route(
+            "/api/interrupt-pause/:id/approve",
+            axum::routing::put(handlers::interrupt_pause::approve_interrupt_pause_snapshot),
+        )
+        .route(
+            "/api/interrupt-pause/:id/reject",
+            axum::routing::put(handlers::interrupt_pause::reject_interrupt_pause_snapshot),
+        )
         // Whitelist (管理员操作)
-        .route("/api/whitelist", get(handlers::whitelist::list_whitelist).post(handlers::whitelist::create_whitelist))
-        .route("/api/whitelist/pending", get(handlers::whitelist::list_pending))
-        .route("/api/whitelist/rejected", get(handlers::whitelist::list_rejected))
-        .route("/api/whitelist/:id", axum::routing::delete(handlers::whitelist::delete_whitelist))
-        .route("/api/whitelist/:id/approve", axum::routing::put(handlers::whitelist::approve_whitelist))
-        .route("/api/whitelist/:id/reject", axum::routing::put(handlers::whitelist::reject_whitelist))
-
+        .route(
+            "/api/whitelist",
+            get(handlers::whitelist::list_whitelist).post(handlers::whitelist::create_whitelist),
+        )
+        .route(
+            "/api/whitelist/pending",
+            get(handlers::whitelist::list_pending),
+        )
+        .route(
+            "/api/whitelist/rejected",
+            get(handlers::whitelist::list_rejected),
+        )
+        .route(
+            "/api/whitelist/:id",
+            axum::routing::delete(handlers::whitelist::delete_whitelist),
+        )
+        .route(
+            "/api/whitelist/:id/approve",
+            axum::routing::put(handlers::whitelist::approve_whitelist),
+        )
+        .route(
+            "/api/whitelist/:id/reject",
+            axum::routing::put(handlers::whitelist::reject_whitelist),
+        )
         // Verifications (Manual)
-        .route("/api/verifications", get(handlers::verification::list_verifications).post(handlers::verification::create_verification))
-        .route("/api/verifications/:id", axum::routing::put(handlers::verification::update_verification).delete(handlers::verification::delete_verification))
-
+        .route(
+            "/api/verifications",
+            get(handlers::verification::list_verifications)
+                .post(handlers::verification::create_verification),
+        )
+        .route(
+            "/api/verifications/:id",
+            axum::routing::put(handlers::verification::update_verification)
+                .delete(handlers::verification::delete_verification),
+        )
         // Server Management
-        .route("/api/server-groups", get(handlers::server::list_server_groups).post(handlers::server::create_group))
-        .route("/api/server-groups/:id", axum::routing::delete(handlers::server::delete_group))
-        .route("/api/server-statuses", get(handlers::server::list_server_statuses))
-        .route("/api/servers", axum::routing::post(handlers::server::create_server))
-        .route("/api/servers/:id", axum::routing::put(handlers::server::update_server).delete(handlers::server::delete_server))
-        .route("/api/servers/check", axum::routing::post(handlers::server::check_server_status))
+        .route(
+            "/api/server-groups",
+            get(handlers::server::list_server_groups).post(handlers::server::create_group),
+        )
+        .route(
+            "/api/server-groups/:id",
+            axum::routing::delete(handlers::server::delete_group),
+        )
+        .route(
+            "/api/server-statuses",
+            get(handlers::server::list_server_statuses),
+        )
+        .route(
+            "/api/servers",
+            axum::routing::post(handlers::server::create_server),
+        )
+        .route(
+            "/api/servers/:id",
+            axum::routing::put(handlers::server::update_server)
+                .delete(handlers::server::delete_server),
+        )
+        .route(
+            "/api/servers/check",
+            axum::routing::post(handlers::server::check_server_status),
+        )
         // Player Management
-        .route("/api/servers/:id/players", get(handlers::server::get_server_players))
-        .route("/api/servers/:id/kick", axum::routing::post(handlers::server::kick_player))
-        .route("/api/servers/:id/ban", axum::routing::post(handlers::server::ban_player))
+        .route(
+            "/api/servers/:id/players",
+            get(handlers::server::get_server_players),
+        )
+        .route(
+            "/api/servers/:id/kick",
+            axum::routing::post(handlers::server::kick_player),
+        )
+        .route(
+            "/api/servers/:id/ban",
+            axum::routing::post(handlers::server::ban_player),
+        )
         .route_layer(axum::middleware::from_fn(middleware::auth_middleware));
 
     let app = Router::new()
@@ -242,19 +332,52 @@ async fn main() {
         .route("/api-docs/openapi.json", get(openapi_json))
         .route("/swagger-ui", get(swagger_ui_notice))
         .route("/swagger-ui/", get(swagger_ui_notice))
-        .route("/api/auth/login", axum::routing::post(handlers::auth::login))
+        .route(
+            "/api/auth/login",
+            axum::routing::post(handlers::auth::login),
+        )
         // 公开路由：白名单申请（无需认证）
-        .route("/api/whitelist/apply", axum::routing::post(handlers::whitelist::apply_whitelist))
-        .route("/api/whitelist/public-list", get(handlers::whitelist::list_public_whitelist))
-        .route("/api/whitelist/player-info", get(handlers::whitelist::get_player_info))
+        .route(
+            "/api/whitelist/apply",
+            axum::routing::post(handlers::whitelist::apply_whitelist),
+        )
+        .route(
+            "/api/whitelist/public-list",
+            get(handlers::whitelist::list_public_whitelist),
+        )
+        .route(
+            "/api/whitelist/player-info",
+            get(handlers::whitelist::get_player_info),
+        )
         .route("/api/bans/public", get(handlers::ban::list_public_bans))
-        .route("/api/plugin/access-check", post(handlers::plugin::access_check))
-        .route("/api/plugin/interrupt-pause/save", post(handlers::interrupt_pause::save_interrupt_pause_snapshot))
-        .route("/api/plugin/interrupt-pause/peek", post(handlers::interrupt_pause::peek_interrupt_pause_snapshot))
-        .route("/api/plugin/interrupt-pause/request-restore", post(handlers::interrupt_pause::request_interrupt_pause_restore))
-        .route("/api/plugin/interrupt-pause/fetch-approved", post(handlers::interrupt_pause::fetch_approved_interrupt_pause_snapshot))
-        .route("/api/plugin/interrupt-pause/complete-restore", post(handlers::interrupt_pause::complete_interrupt_pause_restore))
-        .route("/api/plugin/interrupt-pause/abort", post(handlers::interrupt_pause::abort_interrupt_pause_snapshot))
+        .route(
+            "/api/plugin/access-check",
+            post(handlers::plugin::access_check),
+        )
+        .route(
+            "/api/plugin/interrupt-pause/save",
+            post(handlers::interrupt_pause::save_interrupt_pause_snapshot),
+        )
+        .route(
+            "/api/plugin/interrupt-pause/peek",
+            post(handlers::interrupt_pause::peek_interrupt_pause_snapshot),
+        )
+        .route(
+            "/api/plugin/interrupt-pause/request-restore",
+            post(handlers::interrupt_pause::request_interrupt_pause_restore),
+        )
+        .route(
+            "/api/plugin/interrupt-pause/fetch-approved",
+            post(handlers::interrupt_pause::fetch_approved_interrupt_pause_snapshot),
+        )
+        .route(
+            "/api/plugin/interrupt-pause/complete-restore",
+            post(handlers::interrupt_pause::complete_interrupt_pause_restore),
+        )
+        .route(
+            "/api/plugin/interrupt-pause/abort",
+            post(handlers::interrupt_pause::abort_interrupt_pause_snapshot),
+        )
         .merge(protected_routes)
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
@@ -262,7 +385,9 @@ async fn main() {
 
     let host = std::env::var("SERVER_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
     let port = std::env::var("SERVER_PORT").unwrap_or_else(|_| "3000".to_string());
-    let addr = format!("{}:{}", host, port).parse::<SocketAddr>().expect("Invalid address");
+    let addr = format!("{}:{}", host, port)
+        .parse::<SocketAddr>()
+        .expect("Invalid address");
 
     tracing::info!("listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
@@ -293,9 +418,7 @@ async fn apply_requested_migration_repairs(pool: &sqlx::PgPool) {
         _ => return,
     };
 
-    tracing::warn!(
-        "Applying explicit SQLX migration repairs from SQLX_MIGRATION_REPAIR_VERSIONS"
-    );
+    tracing::warn!("Applying explicit SQLX migration repairs from SQLX_MIGRATION_REPAIR_VERSIONS");
 
     for raw_version in versions.split(',') {
         let version = raw_version.trim();
@@ -353,7 +476,7 @@ async fn ensure_bootstrap_admin(pool: &sqlx::PgPool) {
                 .expect("Failed to hash bootstrap admin password");
 
             sqlx::query(
-                "INSERT INTO admins (username, password, role) VALUES ($1, $2, 'super_admin')"
+                "INSERT INTO admins (username, password, role) VALUES ($1, $2, 'super_admin')",
             )
             .bind(username)
             .bind(hashed)

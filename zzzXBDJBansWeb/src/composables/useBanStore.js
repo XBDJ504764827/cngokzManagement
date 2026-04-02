@@ -9,6 +9,13 @@ const banPagination = ref({
     pageSize: 25,
     total: 0
 })
+const publicBanPagination = ref({
+    page: 1,
+    pageSize: 25,
+    total: 0,
+    status: 'active',
+    search: ''
+})
 
 export const useBanStore = () => {
 
@@ -48,13 +55,35 @@ export const useBanStore = () => {
         }
     }
 
-    const fetchPublicBans = async () => {
+    const fetchPublicBans = async ({
+        page = publicBanPagination.value.page,
+        pageSize = publicBanPagination.value.pageSize,
+        status = publicBanPagination.value.status,
+        search = publicBanPagination.value.search
+    } = {}) => {
         try {
-            const res = await api.get('/bans/public')
-            // Public endpoint returns similar structure but filtered fields. 
-            // We can reuse the mapper if fields match, or use a simplified one.
-            // The mapper handles missing fields gracefully (undefined).
-            publicBans.value = res.data.map(mapBanFromBackend)
+            const params = {
+                page,
+                page_size: pageSize
+            }
+
+            if (status && status !== 'all') {
+                params.status = status
+            }
+
+            if (search) {
+                params.search = search
+            }
+
+            const res = await api.get('/bans/public', { params })
+            publicBans.value = res.data.items.map(mapBanFromBackend)
+            publicBanPagination.value = {
+                page: res.data.page,
+                pageSize: res.data.page_size,
+                total: res.data.total,
+                status,
+                search: search || ''
+            }
         } catch (e) {
             console.error(e)
         }
@@ -157,6 +186,7 @@ export const useBanStore = () => {
         bans,
         publicBans,
         banPagination,
+        publicBanPagination,
         fetchBans,
         fetchPublicBans,
         addBan,

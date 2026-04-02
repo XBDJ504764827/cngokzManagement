@@ -1,15 +1,15 @@
+use crate::handlers::auth::Claims;
+use crate::AppState;
 use axum::{
     extract::{Extension, Path, State},
     http::StatusCode,
     Json,
 };
-use serde::{Deserialize, Serialize};
-use crate::AppState;
-use std::sync::Arc;
-use sqlx::Row;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use sqlx::Row;
+use std::sync::Arc;
 use utoipa::ToSchema;
-use crate::handlers::auth::Claims;
 
 #[derive(Serialize, ToSchema)]
 pub struct VerificationRecord {
@@ -58,15 +58,18 @@ pub async fn list_verifications(
         .await
         .map_err(|e| e.to_string())?;
 
-    let records = rows.into_iter().map(|row| VerificationRecord {
-        steam_id: row.get("steam_id"),
-        status: row.get("status"),
-        reason: row.get("reason"),
-        steam_level: row.get("steam_level"),
-        playtime_minutes: row.get("playtime_minutes"),
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
-    }).collect();
+    let records = rows
+        .into_iter()
+        .map(|row| VerificationRecord {
+            steam_id: row.get("steam_id"),
+            status: row.get("status"),
+            reason: row.get("reason"),
+            steam_level: row.get("steam_level"),
+            playtime_minutes: row.get("playtime_minutes"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+        })
+        .collect();
 
     Ok(Json(records))
 }
@@ -93,30 +96,37 @@ pub async fn create_verification(
     }
 
     let status = payload.status.unwrap_or_else(|| "pending".to_string());
-    
+
     // Strict status validation
     if !["pending", "verified", "allowed"].contains(&status.as_str()) {
-         return Err(format!("Invalid status '{}'. Allowed: pending, verified, allowed", status));
+        return Err(format!(
+            "Invalid status '{}'. Allowed: pending, verified, allowed",
+            status
+        ));
     }
-    
+
     // Check if exists
-    let exists: bool = sqlx::query_scalar("SELECT COUNT(*) FROM player_verifications WHERE steam_id = $1")
-        .bind(&payload.steam_id)
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or(0) > 0;
+    let exists: bool =
+        sqlx::query_scalar("SELECT COUNT(*) FROM player_verifications WHERE steam_id = $1")
+            .bind(&payload.steam_id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or(0)
+            > 0;
 
     if exists {
         return Err("Verification record already exists for this SteamID".to_string());
     }
 
-    let _ = sqlx::query("INSERT INTO player_verifications (steam_id, status, reason) VALUES ($1, $2, $3)")
-        .bind(&payload.steam_id)
-        .bind(&status)
-        .bind(&payload.reason)
-        .execute(&state.db)
-        .await
-        .map_err(|e| e.to_string())?;
+    let _ = sqlx::query(
+        "INSERT INTO player_verifications (steam_id, status, reason) VALUES ($1, $2, $3)",
+    )
+    .bind(&payload.steam_id)
+    .bind(&status)
+    .bind(&payload.reason)
+    .execute(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
 
     // Return the created record (fetch it back or construct it)
     let row = sqlx::query("SELECT steam_id, status, reason, steam_level, playtime_minutes, created_at, updated_at FROM player_verifications WHERE steam_id = $1")
@@ -162,7 +172,10 @@ pub async fn update_verification(
 
     if let Some(s) = &payload.status {
         if !["pending", "verified", "allowed"].contains(&s.as_str()) {
-             return Err(format!("Invalid status '{}'. Allowed: pending, verified, allowed", s));
+            return Err(format!(
+                "Invalid status '{}'. Allowed: pending, verified, allowed",
+                s
+            ));
         }
         let _ = sqlx::query("UPDATE player_verifications SET status = $1 WHERE steam_id = $2")
             .bind(s)
@@ -171,9 +184,9 @@ pub async fn update_verification(
             .await
             .map_err(|e| e.to_string())?;
     }
-    
+
     if let Some(r) = &payload.reason {
-         let _ = sqlx::query("UPDATE player_verifications SET reason = $1 WHERE steam_id = $2")
+        let _ = sqlx::query("UPDATE player_verifications SET reason = $1 WHERE steam_id = $2")
             .bind(r)
             .bind(&steam_id)
             .execute(&state.db)

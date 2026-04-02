@@ -6,7 +6,10 @@ pub async fn establish_connection() -> PgPool {
 
     use sqlx::migrate::MigrateDatabase;
 
-    if sqlx::Postgres::database_exists(&database_url).await.unwrap_or(false) {
+    if sqlx::Postgres::database_exists(&database_url)
+        .await
+        .unwrap_or(false)
+    {
         println!("Database already exists.");
     } else {
         println!("Database does not exist, creating...");

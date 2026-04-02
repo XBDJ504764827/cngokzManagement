@@ -1,16 +1,11 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use crate::models::user::{AuthUser, ChangePasswordRequest, LoginRequest, LoginResponse};
+use crate::AppState;
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use bcrypt::verify;
+use jsonwebtoken::{encode, EncodingKey, Header};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
-use crate::AppState;
-use crate::models::user::{AuthUser, LoginRequest, LoginResponse, ChangePasswordRequest};
-use bcrypt::verify;
-use jsonwebtoken::{encode, Header, EncodingKey};
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
@@ -41,21 +36,22 @@ pub async fn login(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<LoginRequest>,
 ) -> impl IntoResponse {
-    let row = sqlx::query_as::<_, crate::models::user::Admin>("SELECT * FROM admins WHERE username = $1")
-        .bind(&payload.username)
-        .fetch_optional(&state.db)
-        .await;
+    let row =
+        sqlx::query_as::<_, crate::models::user::Admin>("SELECT * FROM admins WHERE username = $1")
+            .bind(&payload.username)
+            .fetch_optional(&state.db)
+            .await;
 
     match row {
         Ok(Some(user)) => {
             // Verify password
-            // Note: In a real app we use bcrypt. 
+            // Note: In a real app we use bcrypt.
             // For now, if string matches (for initial plaintext) OR bcrypt verify.
             // Our init migration inserts a bcrypt hash '$2y$10$...'
             // We should use bcrypt::verify.
-            
+
             let valid = verify(&payload.password, &user.password).unwrap_or(false);
-            
+
             if valid {
                 tracing::info!("Login successful for user: {}", user.username);
                 // Generate JWT
@@ -99,18 +95,29 @@ pub async fn login(
 
                 return (StatusCode::OK, Json(response)).into_response();
             } else {
-                tracing::warn!("Login failed for user: {} (Invalid password)", payload.username);
+                tracing::warn!(
+                    "Login failed for user: {} (Invalid password)",
+                    payload.username
+                );
             }
         }
         Ok(None) => {
             tracing::warn!("Login failed: User '{}' not found", payload.username);
         }
         Err(e) => {
-            tracing::error!("Database error during login for user '{}': {}", payload.username, e);
+            tracing::error!(
+                "Database error during login for user '{}': {}",
+                payload.username,
+                e
+            );
         }
     }
 
-    (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Invalid credentials" }))).into_response()
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(json!({ "error": "Invalid credentials" })),
+    )
+        .into_response()
 }
 
 #[utoipa::path(
@@ -121,7 +128,7 @@ pub async fn login(
     )
 )]
 pub async fn logout() -> impl IntoResponse {
-    // Stateless JWT, client just drops token. 
+    // Stateless JWT, client just drops token.
     // We can blacklist token in Redis if stricter.
     (StatusCode::OK, Json(json!({ "msg": "Logged out" })))
 }
@@ -178,17 +185,22 @@ pub async fn change_password(
     Json(payload): Json<crate::models::user::ChangePasswordRequest>,
 ) -> impl IntoResponse {
     // 1. Fetch current user
-    let row = sqlx::query_as::<_, crate::models::user::Admin>("SELECT * FROM admins WHERE username = $1")
-        .bind(&user.sub)
-        .fetch_optional(&state.db)
-        .await;
+    let row =
+        sqlx::query_as::<_, crate::models::user::Admin>("SELECT * FROM admins WHERE username = $1")
+            .bind(&user.sub)
+            .fetch_optional(&state.db)
+            .await;
 
     match row {
         Ok(Some(admin)) => {
             // 2. Verify Old Password
             let valid = verify(&payload.old_password, &admin.password).unwrap_or(false);
             if !valid {
-                return (StatusCode::BAD_REQUEST, Json(json!({ "error": "Old password incorrect" }))).into_response();
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "Old password incorrect" })),
+                )
+                    .into_response();
             }
 
             // 3. Update to New Password
@@ -201,21 +213,30 @@ pub async fn change_password(
 
             match update {
                 Ok(_) => {
-                     // Log functionality (optional)
-                     let _ = crate::utils::log_admin_action(
+                    // Log functionality (optional)
+                    let _ = crate::utils::log_admin_action(
                         &state.db,
                         &user.sub,
                         "change_password",
                         "Self",
-                        "Changed own password"
-                     ).await;
+                        "Changed own password",
+                    )
+                    .await;
 
-                    (StatusCode::OK, Json(json!({ "message": "Password updated successfully" }))).into_response()
-                },
+                    (
+                        StatusCode::OK,
+                        Json(json!({ "message": "Password updated successfully" })),
+                    )
+                        .into_response()
+                }
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
             }
-        },
-        Ok(None) => (StatusCode::NOT_FOUND, Json(json!({ "error": "User not found" }))).into_response(),
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "User not found" })),
+        )
+            .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

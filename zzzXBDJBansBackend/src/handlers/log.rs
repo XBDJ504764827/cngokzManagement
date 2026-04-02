@@ -1,3 +1,6 @@
+use crate::handlers::auth::Claims;
+use crate::models::log::{AuditLog, CreateLogRequest};
+use crate::AppState;
 use axum::{
     extract::{Extension, State},
     http::StatusCode,
@@ -5,9 +8,6 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
-use crate::AppState;
-use crate::models::log::{AuditLog, CreateLogRequest};
-use crate::handlers::auth::Claims;
 
 #[utoipa::path(
     get,
@@ -28,9 +28,11 @@ pub async fn list_logs(
         return (StatusCode::FORBIDDEN, "Access denied").into_response();
     }
 
-    let logs = sqlx::query_as::<_, AuditLog>("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 100")
-        .fetch_all(&state.db)
-        .await;
+    let logs = sqlx::query_as::<_, AuditLog>(
+        "SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 100",
+    )
+    .fetch_all(&state.db)
+    .await;
 
     match logs {
         Ok(data) => (StatusCode::OK, Json(data)).into_response(),
@@ -55,7 +57,7 @@ pub async fn create_log(
     Json(payload): Json<CreateLogRequest>,
 ) -> impl IntoResponse {
     let result = sqlx::query(
-        "INSERT INTO audit_logs (admin_username, action, target, details) VALUES ($1, $2, $3, $4)"
+        "INSERT INTO audit_logs (admin_username, action, target, details) VALUES ($1, $2, $3, $4)",
     )
     .bind(claims.sub)
     .bind(payload.action)

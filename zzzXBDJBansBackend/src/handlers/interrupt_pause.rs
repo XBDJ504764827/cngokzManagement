@@ -282,12 +282,12 @@ pub async fn save_interrupt_pause_snapshot(
     let map_name = payload.map_name.trim();
     let raw_payload = payload.payload.trim();
 
-    if auth_primary.is_empty() || ip_address.is_empty() || map_name.is_empty() || raw_payload.is_empty() {
-        return plugin_text_response(
-            StatusCode::BAD_REQUEST,
-            "invalid",
-            "中断存档缺少必要字段",
-        );
+    if auth_primary.is_empty()
+        || ip_address.is_empty()
+        || map_name.is_empty()
+        || raw_payload.is_empty()
+    {
+        return plugin_text_response(StatusCode::BAD_REQUEST, "invalid", "中断存档缺少必要字段");
     }
 
     let player_name = payload
@@ -457,7 +457,11 @@ pub async fn request_interrupt_pause_restore(
             .await;
 
             match result {
-                Ok(_) => plugin_text_response(StatusCode::OK, "pending", "恢复申请已提交，请等待管理员审核"),
+                Ok(_) => plugin_text_response(
+                    StatusCode::OK,
+                    "pending",
+                    "恢复申请已提交，请等待管理员审核",
+                ),
                 Err(e) => {
                     tracing::error!("Failed to request interrupt pause restore: {}", e);
                     plugin_text_response(
@@ -517,11 +521,7 @@ pub async fn fetch_approved_interrupt_pause_snapshot(
                 .as_deref()
                 .unwrap_or("恢复申请已被拒绝"),
         ),
-        "pending" => plugin_text_response(
-            StatusCode::CONFLICT,
-            "pending",
-            "恢复申请仍在审核中",
-        ),
+        "pending" => plugin_text_response(StatusCode::CONFLICT, "pending", "恢复申请仍在审核中"),
         _ => plugin_text_response(
             StatusCode::CONFLICT,
             "available",
@@ -679,10 +679,11 @@ fn authorize_plugin(headers: &HeaderMap) -> Result<(), Response> {
 }
 
 async fn ensure_server_exists(state: &Arc<AppState>, server_id: i64) -> Result<(), Response> {
-    let exists = sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM servers WHERE id = $1)")
-        .bind(server_id)
-        .fetch_one(&state.db)
-        .await;
+    let exists =
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM servers WHERE id = $1)")
+            .bind(server_id)
+            .fetch_one(&state.db)
+            .await;
 
     match exists {
         Ok(true) => Ok(()),
@@ -692,7 +693,11 @@ async fn ensure_server_exists(state: &Arc<AppState>, server_id: i64) -> Result<(
             "服务器未注册",
         )),
         Err(e) => {
-            tracing::error!("Failed to validate interrupt pause server {}: {}", server_id, e);
+            tracing::error!(
+                "Failed to validate interrupt pause server {}: {}",
+                server_id,
+                e
+            );
             Err(plugin_text_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "error",

@@ -1,3 +1,4 @@
+use crate::handlers::auth::Claims;
 use axum::{
     extract::Request,
     http::{self, StatusCode},
@@ -5,13 +6,10 @@ use axum::{
     response::Response,
 };
 use jsonwebtoken::{decode, DecodingKey, Validation};
-use crate::handlers::auth::Claims;
 
-pub async fn auth_middleware(
-    mut req: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
-    let auth_header = req.headers()
+pub async fn auth_middleware(mut req: Request, next: Next) -> Result<Response, StatusCode> {
+    let auth_header = req
+        .headers()
         .get(http::header::AUTHORIZATION)
         .and_then(|header| header.to_str().ok());
 
@@ -33,7 +31,7 @@ pub async fn auth_middleware(
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
-    
+
     let token_data = decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.as_ref()),

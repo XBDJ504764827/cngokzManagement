@@ -1,4 +1,4 @@
-use chrono::{Duration, Utc, DateTime};
+use chrono::{DateTime, Duration, Utc};
 use regex::Regex;
 
 pub fn parse_duration(duration_str: &str) -> Option<Duration> {
@@ -18,7 +18,7 @@ pub fn parse_duration(duration_str: &str) -> Option<Duration> {
             "d" => Some(Duration::days(value)),
             "mo" => Some(Duration::days(value * 30)), // Approx
             "y" => Some(Duration::days(value * 365)), // Approx
-            _ => None
+            _ => None,
         }
     } else {
         None
@@ -31,10 +31,10 @@ pub fn calculate_expires_at(duration_str: &str) -> Option<DateTime<Utc>> {
     }
     // Handle "Until YYYY-MM-DD HH:MM" custom format if present
     if duration_str.starts_with("Until ") {
-        // Simple parse attempt or frontend sends ISO? 
+        // Simple parse attempt or frontend sends ISO?
         // Frontend sends "Until 2026-01-01 12:00"
         let _date_str = &duration_str[6..];
-        // Naive parsing, assuming UTC or local? 
+        // Naive parsing, assuming UTC or local?
         // Let's try to parse as naive and set to UTC.
         // Actually better if frontend sends ISO8601, but we have text "Until ..."
         // Let's implement robust parsing later if needed, for now try standard formats
@@ -42,7 +42,7 @@ pub fn calculate_expires_at(duration_str: &str) -> Option<DateTime<Utc>> {
         // If "Until", let's try strict format.
         // For simplicity now, return None (manual handling or skip) if complex.
         // But user wants "封禁时间+封禁时长".
-        return None; 
+        return None;
     }
 
     if let Some(duration) = parse_duration(duration_str) {
@@ -59,13 +59,15 @@ pub async fn log_admin_action(
     target: &str,
     details: &str,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("INSERT INTO audit_logs (admin_username, action, target, details) VALUES ($1, $2, $3, $4)")
-        .bind(admin_username)
-        .bind(action)
-        .bind(target)
-        .bind(details)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO audit_logs (admin_username, action, target, details) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(admin_username)
+    .bind(action)
+    .bind(target)
+    .bind(details)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

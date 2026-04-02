@@ -74,12 +74,7 @@ pub async fn access_check(
     let server = match load_server(&state, payload.server_id).await {
         Ok(Some(server)) => server,
         Ok(None) => {
-            return plain_text_response(
-                StatusCode::NOT_FOUND,
-                "deny",
-                "服务器未注册",
-                0,
-            );
+            return plain_text_response(StatusCode::NOT_FOUND, "deny", "服务器未注册", 0);
         }
         Err(e) => {
             tracing::error!("Plugin access check failed to load server: {}", e);
@@ -111,36 +106,31 @@ pub async fn access_check(
                 return plain_text_response(StatusCode::OK, "deny", &message, 0);
             }
             Ok(Some(record)) if record.status == "approved" => {}
-            Ok(_) => match evaluate_verification(
-                &state,
-                &steam_id_64,
-                &player_name,
-                &ip_address,
-            )
-            .await
-            {
-                Ok(VerificationFlow::Allow) => {}
-                Ok(VerificationFlow::Pending) => {
-                    return plain_text_response(
-                        StatusCode::OK,
-                        "pending",
-                        "验证中，请稍候重试",
-                        DEFAULT_RETRY_AFTER_SECONDS,
-                    );
+            Ok(_) => {
+                match evaluate_verification(&state, &steam_id_64, &player_name, &ip_address).await {
+                    Ok(VerificationFlow::Allow) => {}
+                    Ok(VerificationFlow::Pending) => {
+                        return plain_text_response(
+                            StatusCode::OK,
+                            "pending",
+                            "验证中，请稍候重试",
+                            DEFAULT_RETRY_AFTER_SECONDS,
+                        );
+                    }
+                    Ok(VerificationFlow::Deny(message)) => {
+                        return plain_text_response(StatusCode::OK, "deny", &message, 0);
+                    }
+                    Err(e) => {
+                        tracing::error!("Plugin verification flow failed: {}", e);
+                        return plain_text_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "deny",
+                            "验证服务异常",
+                            0,
+                        );
+                    }
                 }
-                Ok(VerificationFlow::Deny(message)) => {
-                    return plain_text_response(StatusCode::OK, "deny", &message, 0);
-                }
-                Err(e) => {
-                    tracing::error!("Plugin verification flow failed: {}", e);
-                    return plain_text_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "deny",
-                        "验证服务异常",
-                        0,
-                    );
-                }
-            },
+            }
             Err(e) => {
                 tracing::error!("Plugin whitelist flow failed: {}", e);
                 return plain_text_response(
@@ -168,12 +158,7 @@ pub async fn access_check(
         Ok(None) => plain_text_response(StatusCode::OK, "allow", "OK", 0),
         Err(e) => {
             tracing::error!("Plugin ban flow failed: {}", e);
-            plain_text_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "deny",
-                "封禁服务异常",
-                0,
-            )
+            plain_text_response(StatusCode::INTERNAL_SERVER_ERROR, "deny", "封禁服务异常", 0)
         }
     }
 }
@@ -440,9 +425,15 @@ async fn evaluate_ban(
     if decision.ban_type == "ip" {
         let linked_reason = format!(
             "同IP关联封禁 (Linked to {})",
-            decision.banned_steam_id_64.unwrap_or_else(|| "unknown".to_string())
+            decision
+                .banned_steam_id_64
+                .unwrap_or_else(|| "unknown".to_string())
         );
-        let steam_id_value = if steam_id.is_empty() { "PENDING" } else { steam_id };
+        let steam_id_value = if steam_id.is_empty() {
+            "PENDING"
+        } else {
+            steam_id
+        };
 
         let _ = sqlx::query(
             "INSERT INTO bans (

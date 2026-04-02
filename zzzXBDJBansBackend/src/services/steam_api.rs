@@ -1,5 +1,6 @@
-use serde::{Deserialize, Serialize};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use utoipa::ToSchema;
 
 #[derive(Debug, Deserialize)]
@@ -74,13 +75,12 @@ impl SteamService {
             .filter(|value| !value.is_empty());
 
         if api_key.is_none() {
-            tracing::warn!("STEAM_API_KEY is not set; Steam API dependent features will be limited");
+            tracing::warn!(
+                "STEAM_API_KEY is not set; Steam API dependent features will be limited"
+            );
         }
 
-        Self {
-            client,
-            api_key,
-        }
+        Self { client, api_key }
     }
 
     pub async fn get_steam_level(&self, steam_id_64: &str) -> Option<i32> {
@@ -120,7 +120,7 @@ impl SteamService {
                         }
                     }
                     // Games list returned but CSGO not found -> 0 minutes
-                    return Some(0); 
+                    return Some(0);
                 }
             }
             Err(e) => tracing::error!("Steam API Games Error: {}", e),
@@ -156,17 +156,15 @@ impl SteamService {
     /// - Vanity Name (custom_name)
     pub async fn resolve_steam_id(&self, input: &str) -> Option<String> {
         let input = input.trim();
-        
+
         // 1. Check if it's already SteamID64 (17 digits, starts with 7)
-        let re_id64 = Regex::new(r"^7656119\d{10}$").unwrap();
-        if re_id64.is_match(input) {
+        if steam_id64_regex().is_match(input) {
             return Some(input.to_string());
         }
 
         // 2. Check SteamID2: STEAM_X:Y:Z
         // Magic: W=Z*2+Y, ID64 = W + 76561197960265728
-        let re_id2 = Regex::new(r"^STEAM_[0-5]:([01]):(\d+)$").unwrap();
-        if let Some(caps) = re_id2.captures(input) {
+        if let Some(caps) = steam_id2_regex().captures(input) {
             let y: u64 = caps[1].parse().ok()?;
             let z: u64 = caps[2].parse().ok()?;
             let w = z * 2 + y;
@@ -175,8 +173,7 @@ impl SteamService {
         }
 
         // 3. Check SteamID3: [U:1:AccountID]
-        let re_id3 = Regex::new(r"^\[U:1:(\d+)\]$").unwrap();
-        if let Some(caps) = re_id3.captures(input) {
+        if let Some(caps) = steam_id3_regex().captures(input) {
             let account_id: u64 = caps[1].parse().ok()?;
             let id64 = account_id + 76561197960265728;
             return Some(id64.to_string());
@@ -186,21 +183,21 @@ impl SteamService {
         if input.contains("steamcommunity.com") {
             // Remove trailing slash
             let clean_url = input.trim_end_matches('/');
-            
+
             // .../profiles/ID64
             if clean_url.contains("/profiles/") {
                 if let Some(pos) = clean_url.rfind('/') {
-                    let id_part = &clean_url[pos+1..];
-                    if re_id64.is_match(id_part) {
+                    let id_part = &clean_url[pos + 1..];
+                    if steam_id64_regex().is_match(id_part) {
                         return Some(id_part.to_string());
                     }
                 }
             }
-            
+
             // .../id/VANITY
             if clean_url.contains("/id/") {
                 if let Some(pos) = clean_url.rfind('/') {
-                    let vanity = &clean_url[pos+1..];
+                    let vanity = &clean_url[pos + 1..];
                     return self.resolve_vanity_url(vanity).await;
                 }
             }
@@ -209,8 +206,7 @@ impl SteamService {
         // 5. Fallback: Assume it might be a vanity URL name directly if it looks like one (alphanumeric)
         // Avoid purely numeric ones unless they failed ID64 check (which they did to get here)
         // But be careful not to resolve garbage.
-        let re_vanity = Regex::new(r"^[a-zA-Z0-9_-]+$").unwrap();
-        if re_vanity.is_match(input) {
+        if vanity_regex().is_match(input) {
             return self.resolve_vanity_url(input).await;
         }
 
@@ -223,7 +219,7 @@ impl SteamService {
             "https://api.steampowered.com/ISteamUser/ResolveVanityURL/v0001/?key={}&vanityurl={}",
             api_key, vanity_url
         );
-        
+
         match self.client.get(&url).send().await {
             Ok(resp) => {
                 if let Ok(data) = resp.json::<ResolveVanityResponse>().await {
@@ -241,7 +237,7 @@ impl SteamService {
     pub fn id64_to_id2(&self, steam_id_64: &str) -> Option<String> {
         let id64: u64 = steam_id_64.parse().ok()?;
         let base_num = 76561197960265728u64;
-        
+
         if id64 < base_num {
             return None;
         }
@@ -252,12 +248,12 @@ impl SteamService {
 
         // Note: Universe is usually 0 or 1. Historically STEAM_0:..., but modern often STEAM_1:...
         // However, in DBs/Plugins usually STEAM_1 is standard for CSGO, but STEAM_0 is legacy.
-        // Let's standardise on STEAM_1 unless it's very old? 
-        // Actually, Valve wiki says "STEAM_X:Y:Z", X is universe. Public universe is 1. 
-        // BUT old games displayed STEAM_0. Let's stick to STEAM_1 for CSGO context if safe, 
+        // Let's standardise on STEAM_1 unless it's very old?
+        // Actually, Valve wiki says "STEAM_X:Y:Z", X is universe. Public universe is 1.
+        // BUT old games displayed STEAM_0. Let's stick to STEAM_1 for CSGO context if safe,
         // OR better yet, check if we need to support both.
         // Given 'STEAM_0:1:783986425' example in prompt, user uses STEAM_0 ??
-        // Let's look at the example prompt: "STEAM_0:1:783986425". 
+        // Let's look at the example prompt: "STEAM_0:1:783986425".
         // OK, user specifically asked for STEAM_0. I will use STEAM_0.
         Some(format!("STEAM_0:{}:{}", y, z))
     }
@@ -266,7 +262,7 @@ impl SteamService {
     pub fn id64_to_id3(&self, steam_id_64: &str) -> Option<String> {
         let id64: u64 = steam_id_64.parse().ok()?;
         let base_num = 76561197960265728u64;
-        
+
         if id64 < base_num {
             return None;
         }
@@ -293,4 +289,24 @@ impl SteamService {
         }
         None
     }
+}
+
+fn steam_id64_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| Regex::new(r"^7656119\d{10}$").expect("valid SteamID64 regex"))
+}
+
+fn steam_id2_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| Regex::new(r"^STEAM_[0-5]:([01]):(\d+)$").expect("valid SteamID2 regex"))
+}
+
+fn steam_id3_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| Regex::new(r"^\[U:1:(\d+)\]$").expect("valid SteamID3 regex"))
+}
+
+fn vanity_regex() -> &'static Regex {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX.get_or_init(|| Regex::new(r"^[a-zA-Z0-9_-]+$").expect("valid vanity regex"))
 }

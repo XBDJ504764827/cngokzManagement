@@ -5,7 +5,7 @@ use std::env;
 async fn main() {
     dotenvy::dotenv().ok();
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    
+
     let base_url = if let Some(idx) = database_url.rfind('/') {
         format!("{}{}", &database_url[..idx + 1], "postgres")
     } else {
@@ -23,6 +23,6 @@ async fn main() {
         .execute(&pool)
         .await
         .expect("Failed to drop database");
-        
+
     println!("Database dropped successfully.");
 }

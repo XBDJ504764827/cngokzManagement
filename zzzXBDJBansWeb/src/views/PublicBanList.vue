@@ -10,7 +10,7 @@
                     <p class="mt-2 text-slate-500 dark:text-slate-400 text-lg">
                         服务器违规与封禁记录公示
                         <span class="ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-gray-200 dark:border-slate-700 shadow-sm">
-                            共 {{ publicBans.length }} 条记录
+                            共 {{ publicBanPagination.total }} 条记录
                         </span>
                     </p>
                 </div>
@@ -78,7 +78,7 @@
 
             <div v-else class="space-y-6">
                  <!-- Empty State -->
-                <div v-if="filteredList.length === 0" class="flex flex-col items-center justify-center py-24 bg-slate-900/30 rounded-2xl border border-dashed border-slate-800">
+                <div v-if="!hasResults" class="flex flex-col items-center justify-center py-24 bg-slate-900/30 rounded-2xl border border-dashed border-slate-800">
                     <div class="w-16 h-16 bg-slate-800/50 rounded-full flex items-center justify-center mb-4">
                         <svg class="h-8 w-8 text-slate-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
@@ -89,7 +89,7 @@
                 </div>
 
                 <!-- Desktop Table View -->
-                <div v-if="filteredList.length > 0" class="hidden md:block rounded-2xl border border-gray-200 dark:border-slate-800 overflow-hidden shadow-2xl bg-white/40 dark:bg-slate-900/40 backdrop-blur-sm transition-colors">
+                <div v-if="hasResults" class="hidden md:block rounded-2xl border border-gray-200 dark:border-slate-800 overflow-hidden shadow-2xl bg-white/40 dark:bg-slate-900/40 backdrop-blur-sm transition-colors">
                     <div class="overflow-x-auto">
                         <table class="min-w-full divide-y divide-gray-200 dark:divide-slate-800/50">
                             <thead class="bg-gray-50 dark:bg-slate-950/50">
@@ -102,7 +102,7 @@
                                 </tr>
                             </thead>
                             <tbody class="divide-y divide-gray-200 dark:divide-slate-800/50 bg-white/50 dark:bg-slate-900/20">
-                                <tr v-for="item in paginatedList" :key="item.id" class="hover:bg-rose-50 dark:hover:bg-rose-500/5 transition-colors group">
+                                <tr v-for="item in publicBans" :key="item.id" class="hover:bg-rose-50 dark:hover:bg-rose-500/5 transition-colors group">
                                     <td class="px-6 py-4 whitespace-nowrap">
                                         <span :class="getStatusBadgeClass(item.status)" class="px-3 py-1 rounded-full text-xs font-medium border shadow-sm">
                                             {{ item.status === 'active' ? '生效中' : '已过期/解封' }}
@@ -175,8 +175,8 @@
                 </div>
 
                 <!-- Mobile Card View -->
-                <div v-if="filteredList.length > 0" class="md:hidden grid grid-cols-1 gap-4">
-                    <div v-for="item in paginatedList" :key="item.id" class="bg-white/60 dark:bg-slate-900/60 backdrop-blur-md rounded-xl border border-gray-200 dark:border-slate-800 p-5 shadow-lg relative overflow-hidden group">
+                <div v-if="hasResults" class="md:hidden grid grid-cols-1 gap-4">
+                    <div v-for="item in publicBans" :key="item.id" class="bg-white/60 dark:bg-slate-900/60 backdrop-blur-md rounded-xl border border-gray-200 dark:border-slate-800 p-5 shadow-lg relative overflow-hidden group">
                         <!-- Left Border Status Indicator -->
                         <div class="absolute left-0 top-0 bottom-0 w-1" :class="item.status === 'active' ? 'bg-rose-500' : 'bg-slate-600'"></div>
                         
@@ -227,15 +227,15 @@
                 </div>
 
                 <!-- Pagination -->
-                 <div v-if="filteredList.length > pageSize" class="flex flex-col sm:flex-row items-center justify-between border-t border-gray-200 dark:border-slate-800/60 pt-6 gap-4">
+                 <div v-if="publicBanPagination.total > publicBanPagination.pageSize" class="flex flex-col sm:flex-row items-center justify-between border-t border-gray-200 dark:border-slate-800/60 pt-6 gap-4">
                     <p class="text-sm text-slate-500 order-2 sm:order-1">
-                        显示 <span class="text-slate-700 dark:text-slate-300 font-medium">{{ startIndex + 1 }}</span> - <span class="text-slate-700 dark:text-slate-300 font-medium">{{ Math.min(endIndex, filteredList.length) }}</span> 条，
-                        共 <span class="text-slate-700 dark:text-slate-300 font-medium">{{ filteredList.length }}</span> 条
+                        显示 <span class="text-slate-700 dark:text-slate-300 font-medium">{{ startIndex }}</span> - <span class="text-slate-700 dark:text-slate-300 font-medium">{{ endIndex }}</span> 条，
+                        共 <span class="text-slate-700 dark:text-slate-300 font-medium">{{ publicBanPagination.total }}</span> 条
                     </p>
                     
                     <nav class="isolate inline-flex rounded-xl shadow-sm order-1 sm:order-2" aria-label="Pagination">
                          <button 
-                            @click="currentPage--"
+                            @click="goToPage(currentPage - 1)"
                             :disabled="currentPage === 1"
                             class="relative inline-flex items-center rounded-l-xl px-3 py-2 bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:bg-gray-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-white disabled:opacity-50 disabled:cursor-not-allowed transition-all"
                         >
@@ -245,7 +245,7 @@
                         <button
                             v-for="p in visiblePages"
                             :key="p"
-                            @click="currentPage = p"
+                            @click="goToPage(p)"
                             :class="[
                                 currentPage === p 
                                     ? 'z-10 bg-rose-600 text-white border-rose-500 shadow-[0_0_10px_-2px_rgba(225,29,72,0.5)]' 
@@ -257,7 +257,7 @@
                         </button>
                         
                         <button 
-                            @click="currentPage++"
+                            @click="goToPage(currentPage + 1)"
                             :disabled="currentPage >= totalPages"
                             class="relative inline-flex items-center rounded-r-xl px-3 py-2 bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:bg-gray-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-white disabled:opacity-50 disabled:cursor-not-allowed transition-all"
                         >
@@ -271,7 +271,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed, watch } from 'vue';
+import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { useBanStore } from '../composables/useBanStore';
 import { useToast } from '@/composables/useToast';
@@ -279,18 +279,24 @@ import { useToast } from '@/composables/useToast';
 const toast = useToast();
 const route = useRoute();
 const router = useRouter();
-const { publicBans, fetchPublicBans } = useBanStore();
+const { publicBans, publicBanPagination, fetchPublicBans } = useBanStore();
 
 const loading = ref(true);
 const searchQuery = ref('');
 const currentTab = ref(route.query.tab || 'active'); // Default to showing active bans
 const currentPage = ref(1);
-const pageSize = 15;
+let searchTimer = null;
 
-const fetchList = async () => {
+const fetchList = async ({ page = currentPage.value } = {}) => {
     loading.value = true;
     try {
-        await fetchPublicBans();
+        await fetchPublicBans({
+            page,
+            pageSize: 15,
+            status: currentTab.value,
+            search: searchQuery.value.trim()
+        });
+        currentPage.value = publicBanPagination.value.page;
     } catch (error) {
         console.error('Failed to fetch public bans:', error);
     } finally {
@@ -298,43 +304,39 @@ const fetchList = async () => {
     }
 };
 
-// --- Filters & Search ---
-const filteredList = computed(() => {
-    let result = publicBans.value;
-
-    // Tab Filter
-    if (currentTab.value === 'active') {
-        result = result.filter(item => item.status === 'active');
-    }
-    // 'all' includes everything
-
-    // Search Filter
-    if (searchQuery.value) {
-        const q = searchQuery.value.toLowerCase();
-        result = result.filter(item => 
-            item.name.toLowerCase().includes(q) || 
-            (item.steamId && item.steamId.includes(q)) ||
-            (item.steam_id_64 && item.steam_id_64.includes(q))
-        );
-    }
-
-    return result;
+const hasResults = computed(() => publicBans.value.length > 0);
+const totalPages = computed(() => Math.max(1, Math.ceil(publicBanPagination.value.total / publicBanPagination.value.pageSize)));
+const startIndex = computed(() => {
+    if (publicBanPagination.value.total === 0) return 0;
+    return (currentPage.value - 1) * publicBanPagination.value.pageSize + 1;
+});
+const endIndex = computed(() => {
+    if (publicBanPagination.value.total === 0) return 0;
+    return Math.min(currentPage.value * publicBanPagination.value.pageSize, publicBanPagination.value.total);
 });
 
-// --- Pagination ---
-const totalPages = computed(() => Math.ceil(filteredList.value.length / pageSize));
+const goToPage = async (page) => {
+    if (page < 1 || page > totalPages.value || page === currentPage.value) {
+        return;
+    }
+    await fetchList({ page });
+};
 
 watch(currentTab, (newTab) => {
     router.replace({ query: { ...route.query, tab: newTab } });
-});
-
-watch([currentTab, searchQuery], () => {
     currentPage.value = 1;
+    fetchList({ page: 1 });
 });
 
-const startIndex = computed(() => (currentPage.value - 1) * pageSize);
-const endIndex = computed(() => startIndex.value + pageSize);
-const paginatedList = computed(() => filteredList.value.slice(startIndex.value, endIndex.value));
+watch(searchQuery, () => {
+    currentPage.value = 1;
+    if (searchTimer) {
+        clearTimeout(searchTimer);
+    }
+    searchTimer = setTimeout(() => {
+        fetchList({ page: 1 });
+    }, 300);
+});
 
 const visiblePages = computed(() => {
     const pages = [];
@@ -449,5 +451,11 @@ const copyToClipboard = async (text) => {
 
 onMounted(() => {
     fetchList();
+});
+
+onBeforeUnmount(() => {
+    if (searchTimer) {
+        clearTimeout(searchTimer);
+    }
 });
 </script>

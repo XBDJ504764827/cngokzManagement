@@ -118,7 +118,11 @@ impl GlobalBanCacheService {
             Ok(resp) if resp.status().is_success() => match resp.json::<Value>().await {
                 Ok(data) => Some(data),
                 Err(e) => {
-                    tracing::error!("Failed to parse cached GOKZ ban response for {}: {}", steam_id, e);
+                    tracing::error!(
+                        "Failed to parse cached GOKZ ban response for {}: {}",
+                        steam_id,
+                        e
+                    );
                     None
                 }
             },
