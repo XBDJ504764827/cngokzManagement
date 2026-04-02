@@ -3,6 +3,7 @@ use crate::models::ban::{
     Ban, BanListQuery, CreateBanRequest, PaginatedBanResponse, PaginatedPublicBanResponse,
     PublicBan, PublicBanListQuery, UpdateBanRequest,
 };
+use crate::models::server::Server;
 use crate::utils::{calculate_expires_at, log_admin_action};
 use crate::AppState;
 use axum::{
@@ -522,6 +523,44 @@ struct ResolvedBanSteamIds {
     steam_id_64: Option<String>,
 }
 
+fn unban_commands_for_ban(ban: &Ban) -> Vec<String> {
+    let mut commands = Vec::new();
+
+    let steam_id = ban.steam_id.trim();
+    if !steam_id.is_empty() {
+        commands.push(format!("sm_unban \"{}\"", steam_id));
+    }
+
+    let ip = ban.ip.trim();
+    if !ip.is_empty() {
+        commands.push(format!("sm_unban \"{}\"", ip));
+    }
+
+    commands
+}
+
+async fn unban_ban_on_servers(ban: &Ban, servers: &[Server]) -> Vec<String> {
+    let commands = unban_commands_for_ban(ban);
+    if commands.is_empty() {
+        return Vec::new();
+    }
+
+    let mut failures = Vec::new();
+
+    for server in servers {
+        let address = format!("{}:{}", server.ip, server.port);
+        let password = server.rcon_password.clone().unwrap_or_default();
+
+        for command in &commands {
+            if let Err(error) = crate::utils::rcon::send_command(&address, &password, command).await {
+                failures.push(format!("{} ({}) -> {}", server.name, command, error));
+            }
+        }
+    }
+
+    failures
+}
+
 async fn resolve_ban_steam_identifiers(
     state: &Arc<AppState>,
     steam_id_input: &str,
@@ -605,7 +644,33 @@ pub async fn delete_ban(
         }
     };
 
-    // 3. Delete from DB first (for fast response)
+    let servers = match sqlx::query_as::<_, Server>("SELECT * FROM servers")
+        .fetch_all(&state.db)
+        .await
+    {
+        Ok(servers) => servers,
+        Err(e) => {
+            tracing::error!("Failed to fetch servers for unban {}: {}", id, e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(format!("Failed to load servers for unban: {}", e)),
+            )
+                .into_response();
+        }
+    };
+
+    let unban_failures = unban_ban_on_servers(&ban, &servers).await;
+    if !unban_failures.is_empty() {
+        tracing::error!("Failed to unban ban {} on some servers: {:?}", id, unban_failures);
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({
+                "error": "Failed to unban on all servers; database record was kept",
+                "details": unban_failures,
+            })),
+        )
+            .into_response();
+    }
 
     let result = sqlx::query("DELETE FROM bans WHERE id = $1")
         .bind(id)
@@ -616,60 +681,6 @@ pub async fn delete_ban(
         Ok(res) => {
             if res.rows_affected() == 0 {
                 tracing::warn!("DELETE executed but 0 rows affected for ID {}", id);
-            } else {
-                // 4. Spawn RCON Unban task (Fire-and-forget)
-                // Fetch servers inside the handler first to avoid lifetime issues or clone valid data
-                let servers_result =
-                    sqlx::query_as::<_, crate::models::server::Server>("SELECT * FROM servers")
-                        .fetch_all(&state.db)
-                        .await;
-
-                if let Ok(servers) = servers_result {
-                    let _ban_clone = ban.clone(); // Ban struct needs simple Clone derive or manual clone
-                                                  // If Ban doesn't implement Clone, we might need to construct a lightweight struct or ensure it does.
-                                                  // Assuming Ban implements Clone (it normally derives FromRow, Debug, Serialize, Deserialize - let's check or just clone fields)
-                                                  // Let's manually reconstruct or assume Clone if easy.
-                                                  // Actually, let's just use the data we need: steam_id and ip.
-                    let steam_id = ban.steam_id.clone();
-                    let ip = ban.ip.clone();
-                    let ban_name = ban.name.clone();
-
-                    tokio::spawn(async move {
-                        tracing::debug!(
-                            "Background task: Sending unban commands to {} servers for {}",
-                            servers.len(),
-                            ban_name
-                        );
-                        use crate::utils::rcon::send_command;
-                        use futures::future::join_all;
-
-                        let tasks: Vec<_> = servers
-                            .into_iter()
-                            .map(|server| {
-                                let steam_id = steam_id.clone();
-                                let ip = ip.clone();
-                                async move {
-                                    let address = format!("{}:{}", server.ip, server.port);
-                                    let pwd = server.rcon_password.unwrap_or_default();
-
-                                    // Unban SteamID
-                                    if !steam_id.is_empty() {
-                                        let cmd = format!("sm_unban \"{}\"", steam_id);
-                                        let _ = send_command(&address, &pwd, &cmd).await;
-                                    }
-
-                                    // Unban IP
-                                    if !ip.is_empty() {
-                                        let cmd = format!("sm_unban \"{}\"", ip);
-                                        let _ = send_command(&address, &pwd, &cmd).await;
-                                    }
-                                }
-                            })
-                            .collect();
-
-                        join_all(tasks).await;
-                    });
-                }
             }
 
             let _ = log_admin_action(
@@ -677,12 +688,12 @@ pub async fn delete_ban(
                 &user.sub,
                 "delete_ban",
                 &format!("BanID: {}, Target: {} ({})", id, ban.name, ban.steam_id),
-                "Deleted ban (Unban commands queued)",
+                "Deleted ban after successful unban",
             )
             .await;
             (
                 StatusCode::OK,
-                Json("Ban deleted, unban process started in background"),
+                Json("Ban deleted and unbanned on all servers"),
             )
                 .into_response()
         }

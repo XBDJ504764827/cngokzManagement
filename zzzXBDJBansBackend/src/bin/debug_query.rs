@@ -12,7 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     let in_whitelist: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM whitelist WHERE steam_id = '76561198298405388'")
+        sqlx::query_scalar("SELECT COUNT(*) FROM whitelist WHERE steam_id_64 = '76561198298405388'")
             .fetch_one(&pool)
             .await?;
 

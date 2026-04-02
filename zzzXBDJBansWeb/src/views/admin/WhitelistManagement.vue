@@ -62,7 +62,7 @@ const banCache = ref({}) // key: steam_id_64, value: ban data object or null
 
 const checkGlobalBans = async (list) => {
     const steamIdsToCheck = list
-        .map(item => item.steam_id_64 || item.steam_id)
+        .map(item => item.steam_id_64)
         .filter(id => id && banCache.value[id] === undefined);
 
     if (steamIdsToCheck.length === 0) return;
@@ -228,8 +228,7 @@ const closeContextMenu = () => {
 
 const getPlayerSteamId = (player) => {
   if (!player) return null
-  // 优先使用 steam_id_64，如果没有则尝试使用 steam_id
-  return player.steam_id_64 || player.steam_id
+  return player.steam_id_64
 }
 
 const getPlayerSteamProfile = (player) => {
@@ -405,7 +404,7 @@ const copyToClipboard = async (text, label) => {
                   >
                     {{ item.name }}
                   </span>
-                  <div v-if="banCache[item.steam_id_64 || item.steam_id]" class="mt-1">
+                  <div v-if="banCache[item.steam_id_64]" class="mt-1">
                       <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100">
                           Global封禁记录
                       </span>
@@ -455,27 +454,27 @@ const copyToClipboard = async (text, label) => {
               </td>
             </tr>
             <!-- Ban Info Row for Approved -->
-            <tr v-if="banCache[item.steam_id_64 || item.steam_id]" class="bg-red-50 dark:bg-red-950/10 border-b border-red-100 dark:border-red-900/20">
+            <tr v-if="banCache[item.steam_id_64]" class="bg-red-50 dark:bg-red-950/10 border-b border-red-100 dark:border-red-900/20">
                 <td colspan="8" class="p-4">
                     <div class="space-y-3">
                         <div 
                             class="flex items-center gap-2 text-red-600 dark:text-red-400 text-xs font-bold uppercase tracking-wider cursor-pointer hover:text-red-700 dark:hover:text-red-300 transition-colors select-none"
-                            @click="toggleBanDetails(item.steam_id_64 || item.steam_id)"
+                            @click="toggleBanDetails(item.steam_id_64)"
                         >
                             <svg 
                                 xmlns="http://www.w3.org/2000/svg" 
                                 class="h-4 w-4 transition-transform duration-200" 
-                                :class="{ 'rotate-90': expandedBans[item.steam_id_64 || item.steam_id] }"
+                                :class="{ 'rotate-90': expandedBans[item.steam_id_64] }"
                                 viewBox="0 0 20 20" 
                                 fill="currentColor"
                             >
                                 <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd" />
                             </svg>
-                           检测到 GOKZ 全局封禁记录 ({{ banCache[item.steam_id_64 || item.steam_id].length }}) - 点击展开详情
+                           检测到 GOKZ 全局封禁记录 ({{ banCache[item.steam_id_64].length }}) - 点击展开详情
                         </div>
                         
-                        <div v-show="expandedBans[item.steam_id_64 || item.steam_id]" class="grid gap-2 transition-all duration-300 ease-in-out">
-                            <div v-for="ban in banCache[item.steam_id_64 || item.steam_id]" :key="ban.ban_id" class="bg-white dark:bg-slate-950/50 border border-red-200 dark:border-red-900/30 rounded-lg p-3 text-sm">
+                        <div v-show="expandedBans[item.steam_id_64]" class="grid gap-2 transition-all duration-300 ease-in-out">
+                            <div v-for="ban in banCache[item.steam_id_64]" :key="ban.ban_id" class="bg-white dark:bg-slate-950/50 border border-red-200 dark:border-red-900/30 rounded-lg p-3 text-sm">
                                 <div class="flex items-start justify-between gap-4">
                                     <div class="space-y-2 w-full">
                                         <div class="flex items-center gap-2">
@@ -553,7 +552,7 @@ const copyToClipboard = async (text, label) => {
                     >
                         {{ item.name }}
                     </span>
-                    <div v-if="banCache[item.steam_id_64 || item.steam_id]" class="mt-1">
+                    <div v-if="banCache[item.steam_id_64]" class="mt-1">
                         <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100">
                             Global封禁记录
                         </span>
@@ -561,11 +560,11 @@ const copyToClipboard = async (text, label) => {
                 </td>
                 <td class="p-4 font-mono text-sm text-amber-600 dark:text-yellow-400">
                     <span 
-                        @click="copyToClipboard(item.steam_id_64 || item.steam_id, '玩家SteamID')" 
+                        @click="copyToClipboard(item.steam_id_64, '玩家SteamID64')" 
                         class="cursor-pointer hover:text-amber-800 dark:hover:text-yellow-300 transition-colors"
                         title="点击复制 SteamID"
                     >
-                        {{ item.steam_id_64 || item.steam_id }}
+                        {{ item.steam_id_64 }}
                     </span>
                 </td>
                 <td class="p-4 text-slate-500 dark:text-slate-400 text-sm">
@@ -595,27 +594,27 @@ const copyToClipboard = async (text, label) => {
                 </td>
                 </tr>
                 <!-- Ban Info Row -->
-                <tr v-if="banCache[item.steam_id_64 || item.steam_id]" class="bg-red-50 dark:bg-red-950/10 border-b border-red-100 dark:border-red-900/20">
+                <tr v-if="banCache[item.steam_id_64]" class="bg-red-50 dark:bg-red-950/10 border-b border-red-100 dark:border-red-900/20">
                     <td colspan="5" class="p-4">
                         <div class="space-y-3">
                             <div 
                                 class="flex items-center gap-2 text-red-600 dark:text-red-400 text-xs font-bold uppercase tracking-wider cursor-pointer hover:text-red-700 dark:hover:text-red-300 transition-colors select-none"
-                                @click="toggleBanDetails(item.steam_id_64 || item.steam_id)"
+                                @click="toggleBanDetails(item.steam_id_64)"
                             >
                                 <svg 
                                     xmlns="http://www.w3.org/2000/svg" 
                                     class="h-4 w-4 transition-transform duration-200" 
-                                    :class="{ 'rotate-90': expandedBans[item.steam_id_64 || item.steam_id] }"
+                                    :class="{ 'rotate-90': expandedBans[item.steam_id_64] }"
                                     viewBox="0 0 20 20" 
                                     fill="currentColor"
                                 >
                                     <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd" />
                                 </svg>
-                               检测到 GOKZ 全局封禁记录 ({{ banCache[item.steam_id_64 || item.steam_id].length }}) - 点击展开详情
+                               检测到 GOKZ 全局封禁记录 ({{ banCache[item.steam_id_64].length }}) - 点击展开详情
                             </div>
                             
-                            <div v-show="expandedBans[item.steam_id_64 || item.steam_id]" class="grid gap-2 transition-all duration-300 ease-in-out">
-                                <div v-for="ban in banCache[item.steam_id_64 || item.steam_id]" :key="ban.ban_id" class="bg-white dark:bg-slate-950/50 border border-red-200 dark:border-red-900/30 rounded-lg p-3 text-sm">
+                            <div v-show="expandedBans[item.steam_id_64]" class="grid gap-2 transition-all duration-300 ease-in-out">
+                                <div v-for="ban in banCache[item.steam_id_64]" :key="ban.ban_id" class="bg-white dark:bg-slate-950/50 border border-red-200 dark:border-red-900/30 rounded-lg p-3 text-sm">
                                     <div class="flex items-start justify-between gap-4">
                                         <div class="space-y-2 w-full">
                                             <!-- Ban Type -->
@@ -706,7 +705,7 @@ const copyToClipboard = async (text, label) => {
                   >
                       {{ item.name }}
                   </span>
-                  <div v-if="banCache[item.steam_id_64 || item.steam_id]" class="mt-1">
+                  <div v-if="banCache[item.steam_id_64]" class="mt-1">
                       <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-100">
                           Global封禁记录
                       </span>
@@ -714,11 +713,11 @@ const copyToClipboard = async (text, label) => {
               </td>
               <td class="p-4 font-mono text-sm text-red-600 dark:text-red-400">
                   <span 
-                    @click="copyToClipboard(item.steam_id_64 || item.steam_id, '玩家SteamID')" 
+                    @click="copyToClipboard(item.steam_id_64, '玩家SteamID64')" 
                     class="cursor-pointer hover:text-red-800 dark:hover:text-red-300 transition-colors"
                     title="点击复制 SteamID"
                   >
-                      {{ item.steam_id_64 || item.steam_id }}
+                      {{ item.steam_id_64 }}
                   </span>
               </td>
               <td class="p-4 text-sm text-red-500 dark:text-red-300 max-w-xs truncate" :title="item.reject_reason">
@@ -742,27 +741,27 @@ const copyToClipboard = async (text, label) => {
               </td>
             </tr>
             <!-- Ban Info Row for Rejected -->
-             <tr v-if="banCache[item.steam_id_64 || item.steam_id]" class="bg-red-50 dark:bg-red-950/10 border-b border-red-100 dark:border-red-900/20">
+             <tr v-if="banCache[item.steam_id_64]" class="bg-red-50 dark:bg-red-950/10 border-b border-red-100 dark:border-red-900/20">
                 <td colspan="7" class="p-4">
                     <div class="space-y-3">
                         <div 
                             class="flex items-center gap-2 text-red-600 dark:text-red-400 text-xs font-bold uppercase tracking-wider cursor-pointer hover:text-red-700 dark:hover:text-red-300 transition-colors select-none"
-                            @click="toggleBanDetails(item.steam_id_64 || item.steam_id)"
+                            @click="toggleBanDetails(item.steam_id_64)"
                         >
                             <svg 
                                 xmlns="http://www.w3.org/2000/svg" 
                                 class="h-4 w-4 transition-transform duration-200" 
-                                :class="{ 'rotate-90': expandedBans[item.steam_id_64 || item.steam_id] }"
+                                :class="{ 'rotate-90': expandedBans[item.steam_id_64] }"
                                 viewBox="0 0 20 20" 
                                 fill="currentColor"
                             >
                                 <path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd" />
                             </svg>
-                           检测到 GOKZ 全局封禁记录 ({{ banCache[item.steam_id_64 || item.steam_id].length }}) - 点击展开详情
+                           检测到 GOKZ 全局封禁记录 ({{ banCache[item.steam_id_64].length }}) - 点击展开详情
                         </div>
                         
-                        <div v-show="expandedBans[item.steam_id_64 || item.steam_id]" class="grid gap-2 transition-all duration-300 ease-in-out">
-                            <div v-for="ban in banCache[item.steam_id_64 || item.steam_id]" :key="ban.ban_id" class="bg-white dark:bg-slate-950/50 border border-red-200 dark:border-red-900/30 rounded-lg p-3 text-sm">
+                        <div v-show="expandedBans[item.steam_id_64]" class="grid gap-2 transition-all duration-300 ease-in-out">
+                            <div v-for="ban in banCache[item.steam_id_64]" :key="ban.ban_id" class="bg-white dark:bg-slate-950/50 border border-red-200 dark:border-red-900/30 rounded-lg p-3 text-sm">
                                 <div class="flex items-start justify-between gap-4">
                                     <div class="space-y-2 w-full">
                                         <div class="flex items-center gap-2">

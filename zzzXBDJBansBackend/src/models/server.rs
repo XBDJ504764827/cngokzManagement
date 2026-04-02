@@ -10,7 +10,7 @@ pub struct ServerGroup {
     pub created_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Serialize, Deserialize, FromRow, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, FromRow, Clone, ToSchema)]
 pub struct Server {
     pub id: i64,
     pub group_id: i64,

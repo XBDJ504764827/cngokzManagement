@@ -394,6 +394,34 @@ pub struct BanPlayerRequest {
     pub reason: Option<String>,
 }
 
+fn build_unban_commands(steam_id: &str, ip: &str) -> Vec<String> {
+    let mut commands = Vec::new();
+
+    let steam_id = steam_id.trim();
+    if !steam_id.is_empty() && steam_id != "Unknown" {
+        commands.push(format!("sm_unban \"{}\"", steam_id));
+    }
+
+    let ip = ip.trim();
+    if !ip.is_empty() && ip != "0.0.0.0" {
+        commands.push(format!("sm_unban \"{}\"", ip));
+    }
+
+    commands
+}
+
+async fn rollback_rcon_ban(address: &str, password: &str, steam_id: &str, ip: &str) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    for command in build_unban_commands(steam_id, ip) {
+        if let Err(error) = send_command(address, password, &command).await {
+            errors.push(format!("{}: {}", command, error));
+        }
+    }
+
+    errors
+}
+
 #[utoipa::path(
     get,
     path = "/api/servers/{id}/players",
@@ -617,7 +645,15 @@ pub async fn ban_player(
         "0.0.0.0".to_string(),
     ));
 
-    // 2. Insert Ban into DB
+    let steam_id_64 = if steam_id != "Unknown" {
+        state.steam_service.resolve_steam_id(&steam_id).await
+    } else {
+        None
+    };
+    let steam_id_3 = steam_id_64
+        .as_deref()
+        .and_then(|value| state.steam_service.id64_to_id3(value));
+
     let expires_at = if payload.duration > 0 {
         Some(chrono::Utc::now() + chrono::Duration::minutes(payload.duration as i64))
     } else {
@@ -631,19 +667,34 @@ pub async fn ban_player(
         .unwrap_or("Banned by admin".to_string());
 
     tracing::info!(
-        "Attempting to insert ban for: Name={}, SteamID={}, IP={}",
+        "Attempting to ban player: Name={}, SteamID={}, IP={}",
         name,
         steam_id,
         ip_only
     );
 
+    let command = format!(
+        "sm_ban #{} {} \"{}\"",
+        payload.userid, payload.duration, reason
+    );
+
+    if let Err(error) = send_command(&address, &pwd, &command).await {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(format!("Failed to ban: {}", error)),
+        )
+            .into_response();
+    }
+
     let db_result = sqlx::query(
-        "INSERT INTO bans (name, steam_id, ip, ban_type, reason, duration, admin_name, expires_at, created_at, status, server_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), 'active', $9)"
+        "INSERT INTO bans (name, steam_id, steam_id_3, steam_id_64, ip, ban_type, reason, duration, admin_name, expires_at, created_at, status, server_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), 'active', $11)"
     )
     .bind(&name)
     .bind(&steam_id)
+    .bind(&steam_id_3)
+    .bind(&steam_id_64)
     .bind(&ip_only)
-    .bind("ip") // Changed to 'ip' as requested
+    .bind("ip")
     .bind(&reason)
     .bind(payload.duration.to_string())
     .bind(&user.sub)
@@ -652,23 +703,7 @@ pub async fn ban_player(
     .execute(&state.db)
     .await;
 
-    if let Err(e) = &db_result {
-        tracing::error!("Failed to insert ban into DB: {}", e);
-        // We continue to ban in game, but log error.
-        // Or should we return error? Usually we want to ensure game ban even if logging fails?
-        // But user wants logging.
-    } else {
-        tracing::info!("Ban inserted successfully");
-    }
-
-    // 3. Execute RCON Ban
-    // Command: sm_ban #<userid> <minutes|0> [reason]
-    let command = format!(
-        "sm_ban #{} {} \"{}\"",
-        payload.userid, payload.duration, reason
-    );
-
-    match send_command(&address, &pwd, &command).await {
+    match db_result {
         Ok(_) => {
             let _ = log_admin_action(
                 &state.db,
@@ -683,10 +718,26 @@ pub async fn ban_player(
             .await;
             (StatusCode::OK, Json("Player banned and recorded")).into_response()
         }
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(format!("Failed to ban: {}", e)),
-        )
-            .into_response(),
+        Err(error) => {
+            tracing::error!("Failed to insert ban into DB after RCON success: {}", error);
+
+            let rollback_errors = rollback_rcon_ban(&address, &pwd, &steam_id, &ip_only).await;
+            if rollback_errors.is_empty() {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json("Ban applied in game but database write failed; rollback completed"),
+                )
+                    .into_response();
+            }
+
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(format!(
+                    "Ban applied in game but database write failed; rollback also failed: {}",
+                    rollback_errors.join("; ")
+                )),
+            )
+                .into_response()
+        }
     }
 }

@@ -16,6 +16,48 @@ use axum::{
 use serde_json::json;
 use std::sync::Arc;
 
+async fn resolve_whitelist_identifiers(
+    state: &Arc<AppState>,
+    input: &str,
+) -> Result<(String, String, String), axum::response::Response> {
+    let steam_service = state.steam_service.as_ref();
+
+    let steam_id_64 = match steam_service.resolve_steam_id(input).await {
+        Some(id) => id,
+        None => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "SteamID 格式无效，请检查" })),
+            )
+                .into_response())
+        }
+    };
+
+    let steam_id_2 = match steam_service.id64_to_id2(&steam_id_64) {
+        Some(id) => id,
+        None => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "无法解析 SteamID2" })),
+            )
+                .into_response())
+        }
+    };
+
+    let steam_id_3 = match steam_service.id64_to_id3(&steam_id_64) {
+        Some(id) => id,
+        None => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "无法解析 SteamID3" })),
+            )
+                .into_response())
+        }
+    };
+
+    Ok((steam_id_64, steam_id_2, steam_id_3))
+}
+
 // 获取已审核通过的白名单列表（管理员）
 #[utoipa::path(
     get,
@@ -124,39 +166,15 @@ pub async fn apply_whitelist(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<ApplyWhitelistRequest>,
 ) -> impl IntoResponse {
-    let steam_service = state.steam_service.as_ref();
+    let (steam_id_64, steam_id_2, steam_id_3) =
+        match resolve_whitelist_identifiers(&state, &payload.steam_id).await {
+            Ok(ids) => ids,
+            Err(response) => return response,
+        };
 
-    // 解析输入的 SteamID 为各种格式
-    // 严格模式：resolve_steam_id 如果返回 Some，表示解析成功。
-    // 我们必须确保能拿到 ID64, ID3, ID2
-    let steam_id_64_opt = steam_service.resolve_steam_id(&payload.steam_id).await;
-
-    if steam_id_64_opt.is_none() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "SteamID 格式无效，请检查" })),
-        );
-    }
-
-    let steam_id_64 = steam_id_64_opt.unwrap();
-    let steam_id_2_opt = steam_service.id64_to_id2(&steam_id_64);
-    let steam_id_3 = steam_service.id64_to_id3(&steam_id_64);
-
-    // 确保三种格式都存在
-    if steam_id_2_opt.is_none() || steam_id_3.is_none() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "无法解析 SteamID 格式" })),
-        );
-    }
-    let steam_id_2 = steam_id_2_opt.unwrap();
-
-    // 检查是否已存在（任何状态）
-    // 获取已存在的记录状态
     let existing_status: Option<String> =
-        sqlx::query_scalar("SELECT status FROM whitelist WHERE steam_id_64 = $1 OR steam_id = $2")
+        sqlx::query_scalar("SELECT status FROM whitelist WHERE steam_id_64 = $1")
             .bind(&steam_id_64)
-            .bind(&steam_id_2)
             .fetch_optional(&state.db)
             .await
             .unwrap_or(None);
@@ -171,7 +189,8 @@ pub async fn apply_whitelist(
         return (
             StatusCode::CONFLICT,
             Json(json!({ "error": msg, "status": status })),
-        );
+        )
+            .into_response();
     }
 
     let result = sqlx::query(
@@ -188,13 +207,15 @@ pub async fn apply_whitelist(
         Ok(_) => (
             StatusCode::CREATED,
             Json(json!({ "message": "申请已提交，请等待管理员审核" })),
-        ),
+        )
+            .into_response(),
         Err(e) => {
             tracing::error!("Failed to submit whitelist application: {:?}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({ "error": "提交申请失败" })),
             )
+                .into_response()
         }
     }
 }
@@ -217,29 +238,11 @@ pub async fn create_whitelist(
     Extension(user): Extension<Claims>,
     Json(payload): Json<CreateWhitelistRequest>,
 ) -> impl IntoResponse {
-    let steam_service = state.steam_service.as_ref();
-
-    // 解析输入的 SteamID 为各种格式
-    let steam_id_64_opt = steam_service.resolve_steam_id(&payload.steam_id).await;
-
-    if steam_id_64_opt.is_none() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Invalid SteamID format" })),
-        );
-    }
-
-    let steam_id_64 = steam_id_64_opt.unwrap();
-    let steam_id_2_opt = steam_service.id64_to_id2(&steam_id_64);
-    let steam_id_3 = steam_service.id64_to_id3(&steam_id_64);
-
-    if steam_id_2_opt.is_none() || steam_id_3.is_none() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Cannot resolve SteamID variants" })),
-        );
-    }
-    let steam_id_2 = steam_id_2_opt.unwrap();
+    let (steam_id_64, steam_id_2, steam_id_3) =
+        match resolve_whitelist_identifiers(&state, &payload.steam_id).await {
+            Ok(ids) => ids,
+            Err(response) => return response,
+        };
 
     let result = sqlx::query(
         "INSERT INTO whitelist (steam_id, steam_id_3, steam_id_64, name, status, admin_name) VALUES ($1, $2, $3, $4, 'approved', $5)",
@@ -256,13 +259,15 @@ pub async fn create_whitelist(
         Ok(_) => (
             StatusCode::CREATED,
             Json(json!({ "message": "Whitelist added" })),
-        ),
+        )
+            .into_response(),
         Err(e) => {
             tracing::error!("Failed to add whitelist: {:?}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({ "error": "Failed to add whitelist or duplicate entry" })),
             )
+                .into_response()
         }
     }
 }
@@ -401,7 +406,6 @@ pub async fn list_public_whitelist(State(state): State<Arc<AppState>>) -> impl I
             created_at,
             CASE
                 WHEN steam_id_64 IS NOT NULL AND LENGTH(steam_id_64) >= 4 THEN CONCAT('****', RIGHT(steam_id_64, 4))
-                WHEN steam_id IS NOT NULL AND LENGTH(steam_id) >= 4 THEN CONCAT('****', RIGHT(steam_id, 4))
                 ELSE NULL
             END AS identifier_hint
          FROM whitelist
@@ -439,15 +443,13 @@ pub async fn get_player_info(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let steam_id = params.get("steam_id");
-    if steam_id.is_none() {
+    let Some(steam_id) = params.get("steam_id") else {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "Missing steam_id" })),
         )
             .into_response();
-    }
-    let steam_id = steam_id.unwrap();
+    };
 
     let steam_service = state.steam_service.as_ref();
     let steam_id_64_opt = steam_service.resolve_steam_id(steam_id).await;

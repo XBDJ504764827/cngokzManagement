@@ -37,6 +37,7 @@ struct WhitelistDecision {
 
 struct CacheRecord {
     status: String,
+    reason: Option<String>,
     steam_level: Option<i32>,
     gokz_rating: Option<f64>,
 }
@@ -98,7 +99,7 @@ pub async fn access_check(
     let ip_address = payload.ip_address.trim().to_string();
 
     if server.verification_enabled {
-        match whitelist_decision(&state, &steam_id_64, &steam_id, &other_steam_id).await {
+        match whitelist_decision(&state, &steam_id_64).await {
             Ok(Some(record)) if record.status == "rejected" => {
                 let message = record
                     .reject_reason
@@ -212,19 +213,15 @@ async fn load_server(
 async fn whitelist_decision(
     state: &Arc<AppState>,
     steam_id_64: &str,
-    steam_id: &str,
-    other_steam_id: &str,
 ) -> Result<Option<WhitelistDecision>, sqlx::Error> {
     let row = sqlx::query(
         "SELECT status, reject_reason
          FROM whitelist
-         WHERE steam_id_64 = $1 OR steam_id = $2 OR steam_id = $3
+         WHERE steam_id_64 = $1
          ORDER BY CASE status WHEN 'approved' THEN 0 WHEN 'rejected' THEN 1 ELSE 2 END
          LIMIT 1",
     )
     .bind(steam_id_64)
-    .bind(steam_id)
-    .bind(other_steam_id)
     .fetch_optional(&state.db)
     .await?;
 
@@ -262,6 +259,7 @@ async fn evaluate_verification(
 
     let record = CacheRecord {
         status: row.get("status"),
+        reason: row.get("reason"),
         steam_level: row.get("steam_level"),
         gokz_rating: row.get("gokz_rating"),
     };
@@ -271,6 +269,14 @@ async fn evaluate_verification(
         "pending" => {
             refresh_verification_metadata(state, steam_id_64, player_name, ip_address).await?;
             Ok(VerificationFlow::Pending)
+        }
+        "denied" => {
+            refresh_verification_metadata(state, steam_id_64, player_name, ip_address).await?;
+            Ok(VerificationFlow::Deny(
+                record
+                    .reason
+                    .unwrap_or_else(|| "验证未通过，请联系管理员".to_string()),
+            ))
         }
         "verified" => {
             let level = record.steam_level.unwrap_or(0);
@@ -292,15 +298,21 @@ async fn evaluate_verification(
 
                 Ok(VerificationFlow::Allow)
             } else {
-                sqlx::query("DELETE FROM player_cache WHERE steam_id = $1")
-                    .bind(steam_id_64)
-                    .execute(&state.db)
-                    .await?;
-
                 let message = format!(
                     "验证失败：Rating {:.2}(需>={:.1}) / 等级 {}(需>={})",
                     rating, required_rating, level, required_level
                 );
+
+                sqlx::query(
+                    "UPDATE player_cache
+                     SET status = 'denied', reason = $1, updated_at = NOW()
+                     WHERE steam_id = $2",
+                )
+                    .bind(&message)
+                    .bind(steam_id_64)
+                    .execute(&state.db)
+                    .await?;
+
                 Ok(VerificationFlow::Deny(message))
             }
         }

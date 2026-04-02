@@ -3,10 +3,12 @@ use crate::AppState;
 use axum::{
     extract::{Extension, Path, State},
     http::StatusCode,
+    response::IntoResponse,
     Json,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sqlx::Row;
 use std::sync::Arc;
 use utoipa::ToSchema;
@@ -48,15 +50,28 @@ pub struct UpdateVerificationRequest {
 pub async fn list_verifications(
     State(state): State<Arc<AppState>>,
     Extension(claims): Extension<Claims>,
-) -> Result<Json<Vec<VerificationRecord>>, String> {
+) -> impl IntoResponse {
     if claims.role != "super_admin" {
-        return Err("Access denied".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "Access denied" })),
+        )
+            .into_response();
     }
 
-    let rows = sqlx::query("SELECT steam_id, status, reason, steam_level, playtime_minutes, created_at, updated_at FROM player_verifications ORDER BY created_at DESC")
+    let rows = match sqlx::query("SELECT steam_id, status, reason, steam_level, playtime_minutes, created_at, updated_at FROM player_verifications ORDER BY created_at DESC")
         .fetch_all(&state.db)
         .await
-        .map_err(|e| e.to_string())?;
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response()
+        }
+    };
 
     let records = rows
         .into_iter()
@@ -69,9 +84,9 @@ pub async fn list_verifications(
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
         })
-        .collect();
+        .collect::<Vec<_>>();
 
-    Ok(Json(records))
+    (StatusCode::OK, Json(records)).into_response()
 }
 
 #[utoipa::path(
@@ -90,22 +105,30 @@ pub async fn create_verification(
     State(state): State<Arc<AppState>>,
     Extension(claims): Extension<Claims>,
     Json(payload): Json<CreateVerificationRequest>,
-) -> Result<Json<VerificationRecord>, String> {
+) -> impl IntoResponse {
     if claims.role != "super_admin" {
-        return Err("Access denied".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "Access denied" })),
+        )
+            .into_response();
     }
 
     let status = payload.status.unwrap_or_else(|| "pending".to_string());
 
-    // Strict status validation
     if !["pending", "verified", "allowed"].contains(&status.as_str()) {
-        return Err(format!(
-            "Invalid status '{}'. Allowed: pending, verified, allowed",
-            status
-        ));
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!(
+                    "Invalid status '{}'. Allowed: pending, verified, allowed",
+                    status
+                )
+            })),
+        )
+            .into_response();
     }
 
-    // Check if exists
     let exists: bool =
         sqlx::query_scalar("SELECT COUNT(*) FROM player_verifications WHERE steam_id = $1")
             .bind(&payload.steam_id)
@@ -115,10 +138,14 @@ pub async fn create_verification(
             > 0;
 
     if exists {
-        return Err("Verification record already exists for this SteamID".to_string());
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "Verification record already exists for this SteamID" })),
+        )
+            .into_response();
     }
 
-    let _ = sqlx::query(
+    if let Err(e) = sqlx::query(
         "INSERT INTO player_verifications (steam_id, status, reason) VALUES ($1, $2, $3)",
     )
     .bind(&payload.steam_id)
@@ -126,24 +153,42 @@ pub async fn create_verification(
     .bind(&payload.reason)
     .execute(&state.db)
     .await
-    .map_err(|e| e.to_string())?;
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response();
+    }
 
-    // Return the created record (fetch it back or construct it)
-    let row = sqlx::query("SELECT steam_id, status, reason, steam_level, playtime_minutes, created_at, updated_at FROM player_verifications WHERE steam_id = $1")
+    let row = match sqlx::query("SELECT steam_id, status, reason, steam_level, playtime_minutes, created_at, updated_at FROM player_verifications WHERE steam_id = $1")
         .bind(&payload.steam_id)
         .fetch_one(&state.db)
         .await
-        .map_err(|e| e.to_string())?;
+    {
+        Ok(row) => row,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response()
+        }
+    };
 
-    Ok(Json(VerificationRecord {
-        steam_id: row.get("steam_id"),
-        status: row.get("status"),
-        reason: row.get("reason"),
-        steam_level: row.get("steam_level"),
-        playtime_minutes: row.get("playtime_minutes"),
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
-    }))
+    (
+        StatusCode::OK,
+        Json(VerificationRecord {
+            steam_id: row.get("steam_id"),
+            status: row.get("status"),
+            reason: row.get("reason"),
+            steam_level: row.get("steam_level"),
+            playtime_minutes: row.get("playtime_minutes"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+        }),
+    )
+        .into_response()
 }
 
 #[utoipa::path(
@@ -165,51 +210,85 @@ pub async fn update_verification(
     Extension(claims): Extension<Claims>,
     Path(steam_id): Path<String>,
     Json(payload): Json<UpdateVerificationRequest>,
-) -> Result<Json<VerificationRecord>, String> {
+) -> impl IntoResponse {
     if claims.role != "super_admin" {
-        return Err("Access denied".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "Access denied" })),
+        )
+            .into_response();
     }
 
     if let Some(s) = &payload.status {
         if !["pending", "verified", "allowed"].contains(&s.as_str()) {
-            return Err(format!(
-                "Invalid status '{}'. Allowed: pending, verified, allowed",
-                s
-            ));
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!(
+                        "Invalid status '{}'. Allowed: pending, verified, allowed",
+                        s
+                    )
+                })),
+            )
+                .into_response();
         }
-        let _ = sqlx::query("UPDATE player_verifications SET status = $1 WHERE steam_id = $2")
+        if let Err(e) = sqlx::query("UPDATE player_verifications SET status = $1 WHERE steam_id = $2")
             .bind(s)
             .bind(&steam_id)
             .execute(&state.db)
             .await
-            .map_err(|e| e.to_string())?;
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
     }
 
     if let Some(r) = &payload.reason {
-        let _ = sqlx::query("UPDATE player_verifications SET reason = $1 WHERE steam_id = $2")
+        if let Err(e) = sqlx::query("UPDATE player_verifications SET reason = $1 WHERE steam_id = $2")
             .bind(r)
             .bind(&steam_id)
             .execute(&state.db)
             .await
-            .map_err(|e| e.to_string())?;
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
     }
 
-    // Return updated
-    let row = sqlx::query("SELECT steam_id, status, reason, steam_level, playtime_minutes, created_at, updated_at FROM player_verifications WHERE steam_id = $1")
+    let row = match sqlx::query("SELECT steam_id, status, reason, steam_level, playtime_minutes, created_at, updated_at FROM player_verifications WHERE steam_id = $1")
         .bind(&steam_id)
         .fetch_one(&state.db)
         .await
-        .map_err(|e| e.to_string())?;
+    {
+        Ok(row) => row,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response()
+        }
+    };
 
-    Ok(Json(VerificationRecord {
-        steam_id: row.get("steam_id"),
-        status: row.get("status"),
-        reason: row.get("reason"),
-        steam_level: row.get("steam_level"),
-        playtime_minutes: row.get("playtime_minutes"),
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
-    }))
+    (
+        StatusCode::OK,
+        Json(VerificationRecord {
+            steam_id: row.get("steam_id"),
+            status: row.get("status"),
+            reason: row.get("reason"),
+            steam_level: row.get("steam_level"),
+            playtime_minutes: row.get("playtime_minutes"),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+        }),
+    )
+        .into_response()
 }
 
 #[utoipa::path(
@@ -229,16 +308,25 @@ pub async fn delete_verification(
     State(state): State<Arc<AppState>>,
     Extension(claims): Extension<Claims>,
     Path(steam_id): Path<String>,
-) -> Result<StatusCode, String> {
+) -> impl IntoResponse {
     if claims.role != "super_admin" {
-        return Err("Access denied".to_string());
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "Access denied" })),
+        )
+            .into_response();
     }
 
-    sqlx::query("DELETE FROM player_verifications WHERE steam_id = $1")
+    match sqlx::query("DELETE FROM player_verifications WHERE steam_id = $1")
         .bind(steam_id)
         .execute(&state.db)
         .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(StatusCode::NO_CONTENT)
+    {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
 }
