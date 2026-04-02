@@ -21,6 +21,9 @@ pub struct Server {
     pub created_at: Option<DateTime<Utc>>,
     #[sqlx(default)]
     pub verification_enabled: bool,
+    #[sqlx(default)]
+    pub cached_status: String,
+    pub status_checked_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
@@ -32,6 +35,8 @@ pub struct ServerSummary {
     pub port: i32,
     pub created_at: Option<DateTime<Utc>>,
     pub verification_enabled: bool,
+    pub status: String,
+    pub status_checked_at: Option<DateTime<Utc>>,
 }
 
 // Responses often group servers by group
@@ -42,10 +47,11 @@ pub struct GroupWithServers {
     pub servers: Vec<ServerSummary>,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, FromRow, ToSchema)]
 pub struct ServerStatusSummary {
     pub server_id: i64,
     pub status: String,
+    pub status_checked_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]

@@ -4,7 +4,6 @@ use axum::{
     response::IntoResponse,
 };
 use std::sync::Arc;
-use futures::future::join_all;
 use crate::AppState;
 use crate::models::server::{
     ServerGroup, Server, ServerSummary, ServerStatusSummary, GroupWithServers,
@@ -29,17 +28,21 @@ use crate::utils::rcon::check_rcon;
 pub async fn list_server_groups(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    // Fetch all groups
-    let groups = sqlx::query_as::<_, ServerGroup>("SELECT * FROM server_groups ORDER BY id ASC")
+    let groups = match sqlx::query_as::<_, ServerGroup>("SELECT * FROM server_groups ORDER BY id ASC")
         .fetch_all(&state.db)
         .await
-        .unwrap_or_default();
+    {
+        Ok(groups) => groups,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
 
-    // Fetch all servers
-    let servers = sqlx::query_as::<_, Server>("SELECT * FROM servers")
+    let servers = match sqlx::query_as::<_, Server>("SELECT * FROM servers ORDER BY id ASC")
         .fetch_all(&state.db)
         .await
-        .unwrap_or_default();
+    {
+        Ok(servers) => servers,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
 
     // Combine
     let mut result = Vec::new();
@@ -54,6 +57,8 @@ pub async fn list_server_groups(
                 port: s.port,
                 created_at: s.created_at,
                 verification_enabled: s.verification_enabled,
+                status: s.cached_status.clone(),
+                status_checked_at: s.status_checked_at,
             })
             .collect();
 
@@ -80,32 +85,16 @@ pub async fn list_server_groups(
 pub async fn list_server_statuses(
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    let servers = match sqlx::query_as::<_, Server>("SELECT * FROM servers")
+    let statuses = match sqlx::query_as::<_, ServerStatusSummary>(
+        "SELECT id AS server_id, cached_status AS status, status_checked_at FROM servers ORDER BY id ASC"
+    )
         .fetch_all(&state.db)
         .await
     {
-        Ok(servers) => servers,
+        Ok(statuses) => statuses,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
-    let checks = servers.into_iter().map(|server| async move {
-        let status = if let Some(password) = server.rcon_password.clone() {
-            let address = format!("{}:{}", server.ip, server.port);
-            match check_rcon(&address, &password).await {
-                Ok(_) => "online",
-                Err(_) => "offline",
-            }
-        } else {
-            "offline"
-        };
-
-        ServerStatusSummary {
-            server_id: server.id,
-            status: status.to_string(),
-        }
-    });
-
-    let statuses = join_all(checks).await;
     (StatusCode::OK, Json(statuses)).into_response()
 }
 

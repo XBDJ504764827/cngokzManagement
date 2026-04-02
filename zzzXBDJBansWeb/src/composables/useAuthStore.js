@@ -10,6 +10,17 @@ const clearStoredAuth = () => {
     localStorage.removeItem('user')
 }
 
+const mapAdminFromBackend = (admin) => ({
+    id: admin.id,
+    username: admin.username,
+    role: admin.role,
+    steamId: admin.steam_id,
+    steamId3: admin.steam_id_3,
+    steamId64: admin.steam_id_64,
+    remark: admin.remark,
+    createTime: admin.created_at,
+})
+
 const persistUser = (token, user) => {
     localStorage.setItem('token', token)
     localStorage.setItem('user', JSON.stringify(user))
@@ -66,7 +77,7 @@ export const useAuthStore = () => {
     const fetchAdmins = async () => {
         try {
             const res = await api.get('/admins')
-            adminList.value = res.data
+            adminList.value = res.data.map(mapAdminFromBackend)
         } catch (e) {
             console.error("Failed to fetch admins", e)
         }

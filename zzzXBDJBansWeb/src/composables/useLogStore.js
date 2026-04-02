@@ -24,10 +24,9 @@ export const useLogStore = () => {
         }
     }
 
-    const addLog = async ({ admin, action, target, details }) => {
+    const addLog = async ({ action, target, details }) => {
         try {
             await api.post('/logs', {
-                admin_username: admin,
                 action,
                 target,
                 details

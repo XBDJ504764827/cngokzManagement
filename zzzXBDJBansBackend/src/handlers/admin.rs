@@ -12,6 +12,33 @@ use crate::utils::log_admin_action;
 use crate::services::steam_api::SteamService;
 use bcrypt::{hash, DEFAULT_COST};
 
+fn is_super_admin(user: &Claims) -> bool {
+    user.role == "super_admin"
+}
+
+fn is_valid_admin_role(role: &str) -> bool {
+    matches!(role, "admin" | "super_admin")
+}
+
+async fn resolve_actor_admin_id(
+    state: &Arc<AppState>,
+    user: &Claims,
+) -> Result<i64, axum::response::Response> {
+    if let Some(id) = user.id {
+        return Ok(id);
+    }
+
+    match sqlx::query_scalar::<_, i64>("SELECT id FROM admins WHERE username = $1")
+        .bind(&user.sub)
+        .fetch_optional(&state.db)
+        .await
+    {
+        Ok(Some(id)) => Ok(id),
+        Ok(None) => Err((StatusCode::UNAUTHORIZED, Json("Admin not found")).into_response()),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(e.to_string())).into_response()),
+    }
+}
+
 #[utoipa::path(
     get,
     path = "/api/admins",
@@ -24,10 +51,23 @@ use bcrypt::{hash, DEFAULT_COST};
 )]
 pub async fn list_admins(
     State(state): State<Arc<AppState>>,
+    Extension(user): Extension<Claims>,
 ) -> impl IntoResponse {
-    let admins = sqlx::query_as::<_, Admin>("SELECT * FROM admins")
-        .fetch_all(&state.db)
-        .await;
+    let admins = if is_super_admin(&user) {
+        sqlx::query_as::<_, Admin>("SELECT * FROM admins ORDER BY created_at DESC, id DESC")
+            .fetch_all(&state.db)
+            .await
+    } else {
+        let actor_id = match resolve_actor_admin_id(&state, &user).await {
+            Ok(id) => id,
+            Err(response) => return response,
+        };
+
+        sqlx::query_as::<_, Admin>("SELECT * FROM admins WHERE id = $1")
+            .bind(actor_id)
+            .fetch_all(&state.db)
+            .await
+    };
 
     match admins {
         Ok(data) => (StatusCode::OK, Json(data)).into_response(),
@@ -52,7 +92,18 @@ pub async fn create_admin(
     Extension(user): Extension<Claims>,
     Json(payload): Json<CreateAdminRequest>,
 ) -> impl IntoResponse {
-    let hashed = hash(payload.password, DEFAULT_COST).unwrap();
+    if !is_super_admin(&user) {
+        return (StatusCode::FORBIDDEN, Json("Only super admins can create admins")).into_response();
+    }
+
+    if !is_valid_admin_role(&payload.role) {
+        return (StatusCode::BAD_REQUEST, Json("Invalid admin role")).into_response();
+    }
+
+    let hashed = match hash(payload.password, DEFAULT_COST) {
+        Ok(hashed) => hashed,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(e.to_string())).into_response(),
+    };
 
     // 解析 SteamID 为各种格式
     let (steam_id_2, steam_id_3, steam_id_64) = if let Some(ref input_steam_id) = payload.steam_id {
@@ -117,43 +168,94 @@ pub async fn update_admin(
     Path(id): Path<i64>,
     Json(payload): Json<UpdateAdminRequest>,
 ) -> impl IntoResponse {
-    if let Some(username) = payload.username {
-        let _ = sqlx::query("UPDATE admins SET username = $1 WHERE id = $2")
-            .bind(username).bind(id)
-            .execute(&state.db).await;
-    }
-    if let Some(password) = payload.password {
-         let hashed = hash(password, DEFAULT_COST).unwrap();
-         let _ = sqlx::query("UPDATE admins SET password = $1 WHERE id = $2")
-            .bind(hashed).bind(id)
-            .execute(&state.db).await;
-    }
-    if let Some(role) = payload.role {
-        let _ = sqlx::query("UPDATE admins SET role = $1 WHERE id = $2")
-            .bind(role).bind(id)
-            .execute(&state.db).await;
-    }
-    if let Some(ref input_steam_id) = payload.steam_id {
-        // 同时更新所有 SteamID 格式
-        let steam_service = SteamService::new();
-        let id64 = steam_service.resolve_steam_id(input_steam_id).await
-            .unwrap_or_else(|| input_steam_id.clone());
-        
-        let id2 = steam_service.id64_to_id2(&id64);
-        let id3 = steam_service.id64_to_id3(&id64);
-        
-        let _ = sqlx::query("UPDATE admins SET steam_id = $1, steam_id_3 = $2, steam_id_64 = $3 WHERE id = $4")
-            .bind(&id2)
-            .bind(&id3)
-            .bind(&id64)
-            .bind(id)
-            .execute(&state.db).await;
+    let actor_id = match resolve_actor_admin_id(&state, &user).await {
+        Ok(id) => id,
+        Err(response) => return response,
+    };
+    let actor_is_super_admin = is_super_admin(&user);
+
+    if !actor_is_super_admin && actor_id != id {
+        return (StatusCode::FORBIDDEN, Json("You can only update your own account")).into_response();
     }
 
-    if let Some(remark) = payload.remark {
-        let _ = sqlx::query("UPDATE admins SET remark = $1 WHERE id = $2")
-            .bind(remark).bind(id)
-            .execute(&state.db).await;
+    let existing = match sqlx::query_as::<_, Admin>("SELECT * FROM admins WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await
+    {
+        Ok(Some(admin)) => admin,
+        Ok(None) => return (StatusCode::NOT_FOUND, Json("Admin not found")).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(e.to_string())).into_response(),
+    };
+
+    if !actor_is_super_admin {
+        if let Some(role) = &payload.role {
+            if role != &existing.role {
+                return (StatusCode::FORBIDDEN, Json("Only super admins can change roles")).into_response();
+            }
+        }
+    } else if let Some(role) = &payload.role {
+        if !is_valid_admin_role(role) {
+            return (StatusCode::BAD_REQUEST, Json("Invalid admin role")).into_response();
+        }
+    }
+
+    let username = payload.username.unwrap_or(existing.username.clone());
+    let role = if actor_is_super_admin {
+        payload.role.unwrap_or(existing.role.clone())
+    } else {
+        existing.role.clone()
+    };
+    let password = match payload.password {
+        Some(password) => match hash(password, DEFAULT_COST) {
+            Ok(hashed) => hashed,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(e.to_string())).into_response(),
+        },
+        None => existing.password.clone(),
+    };
+    let remark = payload.remark.or(existing.remark.clone());
+
+    let (steam_id, steam_id_3, steam_id_64) = match payload.steam_id {
+        Some(input_steam_id) => {
+            let trimmed = input_steam_id.trim().to_string();
+            if trimmed.is_empty() {
+                (None, None, None)
+            } else {
+                let steam_service = SteamService::new();
+                let id64 = steam_service
+                    .resolve_steam_id(&trimmed)
+                    .await
+                    .unwrap_or(trimmed.clone());
+                let id2 = steam_service.id64_to_id2(&id64);
+                let id3 = steam_service.id64_to_id3(&id64);
+                (id2, id3, Some(id64))
+            }
+        }
+        None => (
+            existing.steam_id.clone(),
+            existing.steam_id_3.clone(),
+            existing.steam_id_64.clone(),
+        ),
+    };
+
+    let result = sqlx::query(
+        "UPDATE admins
+         SET username = $1, password = $2, role = $3, steam_id = $4, steam_id_3 = $5, steam_id_64 = $6, remark = $7
+         WHERE id = $8"
+    )
+    .bind(&username)
+    .bind(&password)
+    .bind(&role)
+    .bind(&steam_id)
+    .bind(&steam_id_3)
+    .bind(&steam_id_64)
+    .bind(&remark)
+    .bind(id)
+    .execute(&state.db)
+    .await;
+
+    if let Err(e) = result {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(e.to_string())).into_response();
     }
 
     let _ = log_admin_action(
@@ -186,6 +288,19 @@ pub async fn delete_admin(
     Extension(user): Extension<Claims>,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
+    if !is_super_admin(&user) {
+        return (StatusCode::FORBIDDEN, Json("Only super admins can delete admins")).into_response();
+    }
+
+    let actor_id = match resolve_actor_admin_id(&state, &user).await {
+        Ok(id) => id,
+        Err(response) => return response,
+    };
+
+    if actor_id == id {
+        return (StatusCode::BAD_REQUEST, Json("You cannot delete your own account")).into_response();
+    }
+
     let result = sqlx::query("DELETE FROM admins WHERE id = $1")
         .bind(id)
         .execute(&state.db)

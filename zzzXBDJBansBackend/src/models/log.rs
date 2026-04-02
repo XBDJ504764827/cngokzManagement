@@ -15,7 +15,6 @@ pub struct AuditLog {
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateLogRequest {
-    pub admin_username: String,
     pub action: String,
     pub target: Option<String>,
     pub details: Option<String>,

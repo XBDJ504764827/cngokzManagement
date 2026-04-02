@@ -55,11 +55,17 @@ async fn check_all_servers(state: &Arc<AppState>) -> Result<(), Box<dyn std::err
 
     // 4. Check each server
     for server in servers {
+        if server.rcon_password.as_deref().unwrap_or("").is_empty() {
+            update_cached_server_status(state, server.id, "unknown").await;
+            continue;
+        }
+
         let address = format!("{}:{}", server.ip, server.port);
         let pwd = server.rcon_password.unwrap_or_default();
 
         match send_command(&address, &pwd, "status").await {
             Ok(output) => {
+                update_cached_server_status(state, server.id, "online").await;
                 for line in output.lines() {
                     let line = line.trim();
                     if !line.starts_with("#") { continue; }
@@ -135,9 +141,30 @@ async fn check_all_servers(state: &Arc<AppState>) -> Result<(), Box<dyn std::err
                     }
                 }
             },
-            Err(_) => continue, 
+            Err(_) => {
+                update_cached_server_status(state, server.id, "offline").await;
+                continue;
+            },
         }
     }
 
     Ok(())
+}
+
+async fn update_cached_server_status(state: &Arc<AppState>, server_id: i64, status: &str) {
+    if let Err(e) = sqlx::query(
+        "UPDATE servers SET cached_status = $1, status_checked_at = NOW() WHERE id = $2"
+    )
+    .bind(status)
+    .bind(server_id)
+    .execute(&state.db)
+    .await
+    {
+        tracing::warn!(
+            "Failed to update cached status for server {} to {}: {}",
+            server_id,
+            status,
+            e
+        );
+    }
 }

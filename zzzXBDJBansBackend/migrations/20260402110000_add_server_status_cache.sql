@@ -1,0 +1,5 @@
+ALTER TABLE servers
+    ADD COLUMN IF NOT EXISTS cached_status VARCHAR(32) NOT NULL DEFAULT 'unknown';
+
+ALTER TABLE servers
+    ADD COLUMN IF NOT EXISTS status_checked_at TIMESTAMPTZ NULL;

@@ -87,6 +87,10 @@ const handleSubmit = async (formData) => {
     }
 }
 
+const showActionsColumn = computed(() => {
+    return isSystemAdmin.value || adminList.value.some(admin => admin.id === currentUser.value?.id)
+})
+
 const getRoleLabel = (role) => {
     return role === 'super_admin' ? '系统级管理员' : '普通管理员'
 }
@@ -136,7 +140,7 @@ const getRoleClass = (role) => {
                         <th class="px-6 py-4 font-medium text-slate-500 dark:text-gray-300">备注</th>
                         <th class="px-6 py-4 font-medium text-slate-500 dark:text-gray-300">SteamID</th>
                         <th class="px-6 py-4 font-medium text-slate-500 dark:text-gray-300">创建时间</th>
-                        <th v-if="isSystemAdmin" class="px-6 py-4 font-medium text-slate-500 dark:text-gray-300 text-right">操作</th>
+                        <th v-if="showActionsColumn" class="px-6 py-4 font-medium text-slate-500 dark:text-gray-300 text-right">操作</th>
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-gray-200 dark:divide-white/5">

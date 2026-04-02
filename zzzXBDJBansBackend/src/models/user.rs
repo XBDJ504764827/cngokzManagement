@@ -50,6 +50,7 @@ pub struct LoginResponse {
 
 #[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct AuthUser {
+    pub id: i64,
     pub username: String,
     pub role: String,
 }

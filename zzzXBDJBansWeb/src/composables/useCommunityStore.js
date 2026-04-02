@@ -18,8 +18,6 @@ export const useCommunityStore = () => {
         try {
             const res = await api.get('/server-groups')
             serverGroups.value = mapServerGroup(res.data)
-            await refreshServerStatuses()
-
         } catch (e) {
             console.error(e)
         }

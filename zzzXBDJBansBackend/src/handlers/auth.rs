@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
+    #[serde(default)]
+    pub id: Option<i64>,
     pub sub: String, // username
     pub role: String,
     pub exp: usize,
@@ -63,6 +65,7 @@ pub async fn login(
                     .timestamp();
 
                 let claims = Claims {
+                    id: Some(user.id),
                     sub: user.username.clone(),
                     role: user.role.clone(),
                     exp: expiration as usize,
@@ -88,6 +91,7 @@ pub async fn login(
                 let response = LoginResponse {
                     token,
                     user: AuthUser {
+                        id: user.id,
                         username: user.username,
                         role: user.role,
                     },
@@ -135,12 +139,22 @@ pub async fn logout() -> impl IntoResponse {
 pub async fn me(
     axum::extract::Extension(user): axum::extract::Extension<Claims>,
 ) -> impl IntoResponse {
+    let Some(id) = user.id else {
+        tracing::warn!("JWT claims missing admin id for user '{}'", user.sub);
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "Invalid credentials" })),
+        )
+            .into_response();
+    };
+
     let response = AuthUser {
+        id,
         username: user.sub,
         role: user.role,
     };
 
-    (StatusCode::OK, Json(response))
+    (StatusCode::OK, Json(response)).into_response()
 }
 
 use bcrypt::{hash, DEFAULT_COST};
