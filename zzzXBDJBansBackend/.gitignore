@@ -3,6 +3,7 @@
 # 环境变量
 .env
 .env.*
+!.env.example
 
 # 常见私密文件
 *.key
