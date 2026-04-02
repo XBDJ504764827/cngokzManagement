@@ -91,15 +91,70 @@ async fn fetch_and_save_data(
         steam_service.get_csgo_playtime_minutes(&resolved_id)
     );
 
+    let Some(level) = level else {
+        mark_pending(
+            pool,
+            table,
+            steam_id,
+            "Steam level data is temporarily unavailable",
+        )
+        .await?;
+        return Ok(());
+    };
+
+    let Some(playtime) = playtime else {
+        mark_pending(
+            pool,
+            table,
+            steam_id,
+            "Steam playtime data is temporarily unavailable",
+        )
+        .await?;
+        return Ok(());
+    };
+
+    let Some(gokz_rating) = gokz_rating else {
+        mark_pending(
+            pool,
+            table,
+            steam_id,
+            "GOKZ rating data is temporarily unavailable",
+        )
+        .await?;
+        return Ok(());
+    };
+
     update_data(
         pool,
         table,
         steam_id,
-        Some(level.unwrap_or(0)),
-        Some(playtime.unwrap_or(0)),
-        Some(gokz_rating.unwrap_or(0.0)),
+        Some(level),
+        Some(playtime),
+        Some(gokz_rating),
     )
     .await?;
+
+    Ok(())
+}
+
+async fn mark_pending(
+    pool: &PgPool,
+    table: &str,
+    steam_id: &str,
+    reason: &str,
+) -> anyhow::Result<()> {
+    let query = format!(
+        "UPDATE {}
+         SET status = 'pending', reason = $1, updated_at = NOW()
+         WHERE steam_id = $2",
+        table
+    );
+
+    sqlx::query(&query)
+        .bind(reason)
+        .bind(steam_id)
+        .execute(pool)
+        .await?;
 
     Ok(())
 }

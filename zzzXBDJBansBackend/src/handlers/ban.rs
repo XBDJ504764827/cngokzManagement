@@ -373,32 +373,20 @@ pub async fn create_ban(
     Json(payload): Json<CreateBanRequest>,
 ) -> impl IntoResponse {
     let expires_at = calculate_expires_at(&payload.duration);
-
-    // 解析输入的 SteamID 为各种格式
-    let steam_service = state.steam_service.as_ref();
-    let steam_id_64 = steam_service
-        .resolve_steam_id(&payload.steam_id)
-        .await
-        .unwrap_or_else(|| payload.steam_id.clone());
-
-    let steam_id_2 = steam_service
-        .id64_to_id2(&steam_id_64)
-        .unwrap_or_else(|| payload.steam_id.clone());
-
-    let steam_id_3 = steam_service.id64_to_id3(&steam_id_64).unwrap_or_default();
+    let resolved_ids = resolve_ban_steam_identifiers(&state, &payload.steam_id).await;
 
     let result = sqlx::query_as::<_, Ban>(
         "INSERT INTO bans (name, steam_id, steam_id_3, steam_id_64, ip, ban_type, reason, duration, admin_name, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *"
     )
     .bind(&payload.name)
-    .bind(&steam_id_2)
-    .bind(&steam_id_3)
-    .bind(&steam_id_64)
+    .bind(&resolved_ids.steam_id)
+    .bind(&resolved_ids.steam_id_3)
+    .bind(&resolved_ids.steam_id_64)
     .bind(&payload.ip)
     .bind(&payload.ban_type)
     .bind(&payload.reason)
     .bind(&payload.duration)
-    .bind(&payload.admin_name)
+    .bind(&user.sub)
     .bind(expires_at)
     .fetch_one(&state.db)
     .await;
@@ -409,7 +397,14 @@ pub async fn create_ban(
                 &state.db,
                 &user.sub,
                 "create_ban",
-                &format!("User: {}, SteamID64: {}", payload.name, steam_id_64),
+                &format!(
+                    "User: {}, SteamID64: {}",
+                    payload.name,
+                    resolved_ids
+                        .steam_id_64
+                        .clone()
+                        .unwrap_or_else(|| resolved_ids.steam_id.clone())
+                ),
                 &format!(
                     "Reason: {}, Duration: {}",
                     payload.reason.clone().unwrap_or_default(),
@@ -455,19 +450,46 @@ pub async fn update_ban(
     };
 
     let name = payload.name.unwrap_or(current.name);
-    let steam_id = payload.steam_id.unwrap_or(current.steam_id);
+    let resolved_ids = match payload.steam_id {
+        Some(steam_id) => resolve_ban_steam_identifiers(&state, &steam_id).await,
+        None => ResolvedBanSteamIds {
+            steam_id: current.steam_id.clone(),
+            steam_id_3: current.steam_id_3.clone(),
+            steam_id_64: current.steam_id_64.clone(),
+        },
+    };
     let ip = payload.ip.unwrap_or(current.ip);
     let ban_type = payload.ban_type.unwrap_or(current.ban_type);
     let reason = payload.reason.or(current.reason);
-    let duration = payload.duration.unwrap_or(current.duration);
+    let (duration, expires_at) = match payload.duration {
+        Some(duration) if duration != current.duration => {
+            let expires_at = calculate_expires_at(&duration);
+            (duration, expires_at)
+        }
+        Some(duration) => (duration, current.expires_at),
+        None => (current.duration, current.expires_at),
+    };
     let status = payload.status.unwrap_or(current.status);
-    let expires_at = calculate_expires_at(&duration);
 
     let updated_ban = match sqlx::query_as::<_, Ban>(
-        "UPDATE bans SET name = $1, steam_id = $2, ip = $3, ban_type = $4, reason = $5, duration = $6, status = $7, expires_at = $8 WHERE id = $9 RETURNING *"
+        "UPDATE bans
+         SET name = $1,
+             steam_id = $2,
+             steam_id_3 = $3,
+             steam_id_64 = $4,
+             ip = $5,
+             ban_type = $6,
+             reason = $7,
+             duration = $8,
+             status = $9,
+             expires_at = $10
+         WHERE id = $11
+         RETURNING *"
     )
     .bind(&name)
-    .bind(&steam_id)
+    .bind(&resolved_ids.steam_id)
+    .bind(&resolved_ids.steam_id_3)
+    .bind(&resolved_ids.steam_id_64)
     .bind(&ip)
     .bind(&ban_type)
     .bind(&reason)
@@ -492,6 +514,35 @@ pub async fn update_ban(
     .await;
 
     (StatusCode::OK, Json(updated_ban)).into_response()
+}
+
+struct ResolvedBanSteamIds {
+    steam_id: String,
+    steam_id_3: Option<String>,
+    steam_id_64: Option<String>,
+}
+
+async fn resolve_ban_steam_identifiers(
+    state: &Arc<AppState>,
+    steam_id_input: &str,
+) -> ResolvedBanSteamIds {
+    let steam_id_input = steam_id_input.trim();
+    let steam_service = state.steam_service.as_ref();
+
+    match steam_service.resolve_steam_id(steam_id_input).await {
+        Some(steam_id_64) => ResolvedBanSteamIds {
+            steam_id: steam_service
+                .id64_to_id2(&steam_id_64)
+                .unwrap_or_else(|| steam_id_input.to_string()),
+            steam_id_3: steam_service.id64_to_id3(&steam_id_64),
+            steam_id_64: Some(steam_id_64),
+        },
+        None => ResolvedBanSteamIds {
+            steam_id: steam_id_input.to_string(),
+            steam_id_3: None,
+            steam_id_64: None,
+        },
+    }
 }
 
 #[utoipa::path(

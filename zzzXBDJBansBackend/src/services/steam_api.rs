@@ -137,6 +137,8 @@ impl SteamService {
                         Ok(data) => return data.rating,
                         Err(e) => tracing::error!("Gokz API Parse Error: {}", e),
                     }
+                } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+                    return Some(0.0);
                 } else {
                     tracing::warn!("Gokz API returned status: {}", resp.status());
                 }

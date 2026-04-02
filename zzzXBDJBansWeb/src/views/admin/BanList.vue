@@ -8,7 +8,7 @@ import ConfirmModal from '../../components/ConfirmModal.vue'
 
 import { useToast } from '../../composables/useToast'
 const { bans, banPagination, addBan, removeBan, updateBan, fetchBans, deleteBanRecord } = useBanStore()
-const { currentUser, isSystemAdmin } = useAuthStore()
+const { isSystemAdmin } = useAuthStore()
 const { serverGroups, fetchServerGroups } = useCommunityStore()
 const toast = useToast()
 
@@ -156,12 +156,7 @@ const handleSubmit = async (formData) => {
             else toast.error('更新失败')
         }
     } else {
-        // Inject current admin name
-        const banData = {
-            ...formData,
-            adminName: currentUser.value ? currentUser.value.username : 'Unknown'
-        }
-        res = await addBan(banData)
+        res = await addBan(formData)
         if (res && res.success) toast.success('添加封禁成功')
         else toast.error(res?.message || '添加失败')
     }

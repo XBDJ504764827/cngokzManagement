@@ -101,8 +101,7 @@ export const useBanStore = () => {
                 ip: banData.ip,
                 ban_type: banData.banType,
                 reason: banData.reason,
-                duration: banData.duration,
-                admin_name: banData.adminName
+                duration: banData.duration
             }
             const res = await api.post('/bans', payload)
             const createdBan = mapBanFromBackend(res.data)

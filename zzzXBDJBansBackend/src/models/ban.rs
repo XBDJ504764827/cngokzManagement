@@ -44,7 +44,7 @@ pub struct CreateBanRequest {
     pub ban_type: String,
     pub reason: Option<String>,
     pub duration: String,
-    pub admin_name: String,
+    pub admin_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

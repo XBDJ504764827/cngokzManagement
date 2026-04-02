@@ -19,7 +19,6 @@ struct BackgroundServer {
     ip: String,
     port: i32,
     rcon_password: Option<String>,
-    cached_status: String,
 }
 
 #[derive(Clone, FromRow)]
@@ -107,7 +106,7 @@ async fn enforce_ip_bans(
     .await?;
 
     let servers = sqlx::query_as::<_, BackgroundServer>(
-        "SELECT id, ip, port, rcon_password, cached_status
+        "SELECT id, ip, port, rcon_password
          FROM servers
          ORDER BY id ASC",
     )
@@ -340,10 +339,6 @@ async fn maybe_update_server_status(
     server: &BackgroundServer,
     next_status: &str,
 ) {
-    if server.cached_status == next_status {
-        return;
-    }
-
     update_cached_server_status(state, server.id, next_status).await;
 }
 
