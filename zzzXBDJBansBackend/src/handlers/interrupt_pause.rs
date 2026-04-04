@@ -70,6 +70,8 @@ pub async fn list_interrupt_pause_snapshots(
             ips.id,
             ips.server_id,
             s.name AS server_name,
+            s.ip AS server_ip,
+            s.port AS server_port,
             ips.auth_primary,
             ips.auth_steamid64,
             ips.auth_steam3,

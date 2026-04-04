@@ -8,6 +8,8 @@ pub struct InterruptPauseSnapshot {
     pub id: i64,
     pub server_id: i64,
     pub server_name: Option<String>,
+    pub server_ip: Option<String>,
+    pub server_port: Option<i32>,
     pub auth_primary: String,
     pub auth_steamid64: Option<String>,
     pub auth_steam3: Option<String>,

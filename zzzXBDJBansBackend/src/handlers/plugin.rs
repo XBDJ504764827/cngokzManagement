@@ -578,7 +578,7 @@ async fn evaluate_verification(
     ip_address: &str,
 ) -> Result<VerificationFlow, sqlx::Error> {
     let row = sqlx::query(
-        "SELECT status, reason, steam_level, gokz_rating
+        "SELECT status, reason, steam_level, gokz_rating::double precision AS gokz_rating
          FROM player_cache
          WHERE steam_id = $1",
     )
@@ -594,8 +594,8 @@ async fn evaluate_verification(
     let record = CacheRecord {
         status: row.get("status"),
         reason: row.get("reason"),
-        steam_level: row.get("steam_level"),
-        gokz_rating: row.get("gokz_rating"),
+        steam_level: row.try_get("steam_level").ok().flatten(),
+        gokz_rating: row.try_get("gokz_rating").ok().flatten(),
     };
 
     match record.status.as_str() {

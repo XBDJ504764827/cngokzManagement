@@ -89,6 +89,20 @@ const formatDateTime = (value) => {
   return new Date(value).toLocaleString()
 }
 
+const formatServerName = (item) => {
+  if (item.server_name?.trim()) {
+    return `${item.server_name} (#${item.server_id})`
+  }
+  return `#${item.server_id}`
+}
+
+const formatServerAddress = (item) => {
+  if (item.server_ip && item.server_port) {
+    return `${item.server_ip}:${item.server_port}`
+  }
+  return '-'
+}
+
 const openRejectModal = (item) => {
   rejectTarget.value = item
   rejectReason.value = ''
@@ -220,7 +234,8 @@ onMounted(fetchSnapshots)
               </td>
               <td class="px-5 py-4">
                 <div class="space-y-1 text-sm">
-                  <p class="font-medium text-slate-800 dark:text-slate-200">{{ item.server_name || `#${item.server_id}` }}</p>
+                  <p class="font-medium text-slate-800 dark:text-slate-200">{{ formatServerName(item) }}</p>
+                  <p class="font-mono text-xs text-slate-400 dark:text-slate-500">{{ formatServerAddress(item) }}</p>
                   <p class="font-mono text-slate-500 dark:text-slate-400">{{ item.map_name }}</p>
                   <p class="text-xs text-slate-400 dark:text-slate-500">模式 {{ item.mode }} / 赛道 {{ item.course }}</p>
                 </div>
