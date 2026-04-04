@@ -39,7 +39,8 @@ pub struct PublicBan {
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateBanRequest {
     pub name: String,
-    pub steam_id: String,
+    pub steam_id: Option<String>,
+    pub steam_id_64: Option<String>,
     pub ip: String,
     pub ban_type: String,
     pub reason: Option<String>,
@@ -51,6 +52,7 @@ pub struct CreateBanRequest {
 pub struct UpdateBanRequest {
     pub name: Option<String>,
     pub steam_id: Option<String>,
+    pub steam_id_64: Option<String>,
     pub ip: Option<String>,
     pub ban_type: Option<String>,
     pub reason: Option<String>,

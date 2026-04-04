@@ -394,26 +394,43 @@ pub struct BanPlayerRequest {
     pub reason: Option<String>,
 }
 
-fn build_unban_commands(steam_id: &str, ip: &str) -> Vec<String> {
-    let mut commands = Vec::new();
+fn build_unban_commands(steam_id_64: Option<&str>, steam_id: &str, steam_id_3: Option<&str>, ip: &str) -> Vec<String> {
+    let primary = steam_id_64
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            let trimmed = steam_id.trim();
+            if trimmed.is_empty() || trimmed == "Unknown" {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
 
-    let steam_id = steam_id.trim();
-    if !steam_id.is_empty() && steam_id != "Unknown" {
-        commands.push(format!("sm_unban \"{}\"", steam_id));
-    }
+    let Some(primary) = primary else {
+        return Vec::new();
+    };
 
-    let ip = ip.trim();
-    if !ip.is_empty() && ip != "0.0.0.0" {
-        commands.push(format!("sm_unban \"{}\"", ip));
-    }
-
-    commands
+    vec![format!(
+        "zzzxbdjbans_sysunban \"{}\" \"{}\" \"{}\" \"{}\"",
+        primary,
+        steam_id.trim(),
+        steam_id_3.unwrap_or(""),
+        ip.trim()
+    )]
 }
 
-async fn rollback_rcon_ban(address: &str, password: &str, steam_id: &str, ip: &str) -> Vec<String> {
+async fn rollback_rcon_ban(
+    address: &str,
+    password: &str,
+    steam_id_64: Option<&str>,
+    steam_id: &str,
+    steam_id_3: Option<&str>,
+    ip: &str,
+) -> Vec<String> {
     let mut errors = Vec::new();
 
-    for command in build_unban_commands(steam_id, ip) {
+    for command in build_unban_commands(steam_id_64, steam_id, steam_id_3, ip) {
         if let Err(error) = send_command(address, password, &command).await {
             errors.push(format!("{}: {}", command, error));
         }
@@ -674,7 +691,7 @@ pub async fn ban_player(
     );
 
     let command = format!(
-        "sm_ban #{} {} \"{}\"",
+        "zzzxbdjbans_sysban #{} {} \"{}\"",
         payload.userid, payload.duration, reason
     );
 
@@ -721,7 +738,8 @@ pub async fn ban_player(
         Err(error) => {
             tracing::error!("Failed to insert ban into DB after RCON success: {}", error);
 
-            let rollback_errors = rollback_rcon_ban(&address, &pwd, &steam_id, &ip_only).await;
+            let rollback_errors =
+                rollback_rcon_ban(&address, &pwd, steam_id_64.as_deref(), &steam_id, steam_id_3.as_deref(), &ip_only).await;
             if rollback_errors.is_empty() {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,

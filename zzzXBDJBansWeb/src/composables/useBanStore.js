@@ -18,6 +18,17 @@ const publicBanPagination = ref({
 })
 
 export const useBanStore = () => {
+    const resolveSteamIdentifierPayload = (input) => {
+        const value = typeof input === 'string' ? input.trim() : ''
+        if (!value) {
+            return { steam_id: undefined, steam_id_64: undefined }
+        }
+
+        return {
+            steam_id: value,
+            steam_id_64: value
+        }
+    }
 
     const mapBanFromBackend = (b) => ({
         id: b.id,
@@ -91,13 +102,15 @@ export const useBanStore = () => {
 
     const addBan = async (banData) => {
         try {
+            const steamIdentifiers = resolveSteamIdentifierPayload(banData.steam_id_64 || banData.steamId)
             // Frontend banData matches backend EXPECTED payload?
             // Backend `CreateBanRequest`:
             // name, steam_id, ip, ban_type, reason, duration, admin_name
             // Frontend sends camelCase. We need to convert.
             const payload = {
                 name: banData.name,
-                steam_id: banData.steamId,
+                steam_id: steamIdentifiers.steam_id,
+                steam_id_64: steamIdentifiers.steam_id_64,
                 ip: banData.ip,
                 ban_type: banData.banType,
                 reason: banData.reason,
@@ -139,9 +152,11 @@ export const useBanStore = () => {
             // Map frontend fields to backend fields if necessary
             // updatedData might contain reason, duration, etc.
             const payload = {}
+            const steamIdentifiers = resolveSteamIdentifierPayload(updatedData.steam_id_64 || updatedData.steamId)
             if (updatedData.status) payload.status = updatedData.status
             if (updatedData.name) payload.name = updatedData.name
-            if (updatedData.steamId) payload.steam_id = updatedData.steamId
+            if (steamIdentifiers.steam_id) payload.steam_id = steamIdentifiers.steam_id
+            if (steamIdentifiers.steam_id_64) payload.steam_id_64 = steamIdentifiers.steam_id_64
             if (updatedData.ip) payload.ip = updatedData.ip
             if (updatedData.banType) payload.ban_type = updatedData.banType
             if (updatedData.reason) payload.reason = updatedData.reason

@@ -171,10 +171,10 @@ const submitForm = () => {
     
     // Validate SteamID
     if (!formData.value.steamId) {
-        errors.value.steamId = '请输入 SteamID'
+        errors.value.steamId = '请输入 SteamID / SteamID64'
         isValid = false
     } else if (!validateSteamId(formData.value.steamId)) {
-        errors.value.steamId = 'SteamID 格式不正确 (例如: STEAM_0:0:123456)'
+        errors.value.steamId = 'SteamID 输入无效'
         isValid = false
     }
 
@@ -248,13 +248,13 @@ const submitForm = () => {
 
         <!-- SteamID -->
         <div>
-          <label class="block text-xs font-medium text-slate-500 dark:text-gray-400 mb-1">SteamID</label>
+          <label class="block text-xs font-medium text-slate-500 dark:text-gray-400 mb-1">SteamID / SteamID64</label>
           <input 
             v-model="formData.steamId" 
             type="text" 
             class="w-full bg-gray-50 dark:bg-[#14161b] border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2 text-slate-900 dark:text-white focus:outline-none focus:border-blue-500 transition-colors"
             :class="{'border-red-500': errors.steamId}"
-            placeholder="STEAM_0:0:12345678"
+            placeholder="7656119xxxxxxxxxx 或 STEAM_0:0:12345678"
           >
           <p v-if="errors.steamId" class="text-xs text-red-500 mt-1">{{ errors.steamId }}</p>
         </div>

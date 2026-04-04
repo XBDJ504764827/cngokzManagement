@@ -96,7 +96,10 @@ const openAddModal = () => {
 
 const openEditModal = (ban) => {
     editMode.value = true
-    currentBan.value = { ...ban }
+    currentBan.value = {
+        ...ban,
+        steamId: ban.steam_id_64 || ban.steamId
+    }
     showModal.value = true
 }
 
@@ -104,7 +107,7 @@ const openRebanModal = (ban) => {
     editMode.value = false // Treat as new ban
     currentBan.value = {
         name: ban.name,
-        steamId: ban.steamId,
+        steamId: ban.steam_id_64 || ban.steamId,
         ip: ban.ip,
         banType: ban.banType,
         reason: ban.reason,

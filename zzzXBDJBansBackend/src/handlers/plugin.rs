@@ -32,7 +32,7 @@ pub struct PluginBanRequest {
     pub admin_name: Option<String>,
     pub admin_steam_id_64: Option<String>,
     pub target_name: Option<String>,
-    pub target_steam_id: String,
+    pub target_steam_id: Option<String>,
     pub target_steam_id_64: Option<String>,
     pub target_ip: String,
     pub duration_minutes: i32,
@@ -44,7 +44,8 @@ pub struct PluginUnbanRequest {
     pub server_id: i64,
     pub admin_name: Option<String>,
     pub admin_steam_id_64: Option<String>,
-    pub target_steam_id: String,
+    pub target_steam_id: Option<String>,
+    pub target_steam_id_64: Option<String>,
 }
 
 struct PluginServer {
@@ -124,13 +125,13 @@ pub async fn sync_ban(
 
     let resolved_ids = resolve_plugin_steam_identifiers(
         &state,
-        &payload.target_steam_id,
         payload.target_steam_id_64.as_deref(),
+        payload.target_steam_id.as_deref(),
     )
     .await;
 
-    if resolved_ids.steam_id.trim().is_empty() {
-        return plain_text_response(StatusCode::BAD_REQUEST, "error", "缺少玩家 SteamID", 0);
+    if resolved_ids.steam_id_64.is_none() {
+        return plain_text_response(StatusCode::BAD_REQUEST, "error", "缺少有效的 SteamID64", 0);
     }
 
     let admin_name = normalize_plugin_admin_name(payload.admin_name.as_deref());
@@ -173,10 +174,7 @@ pub async fn sync_ban(
                 &format!(
                     "{} ({})",
                     target_name,
-                    resolved_ids
-                        .steam_id_64
-                        .clone()
-                        .unwrap_or_else(|| resolved_ids.steam_id.clone())
+                    resolved_ids.steam_id_64.clone().unwrap_or_default()
                 ),
                 &format!(
                     "ServerID: {}, IP: {}, Duration: {}, Reason: {}",
@@ -236,9 +234,9 @@ pub async fn sync_unban(
     }
 
     let resolved_ids =
-        resolve_plugin_steam_identifiers(&state, &payload.target_steam_id, None).await;
-    if resolved_ids.steam_id.trim().is_empty() {
-        return plain_text_response(StatusCode::BAD_REQUEST, "error", "缺少玩家 SteamID", 0);
+        resolve_plugin_steam_identifiers(&state, payload.target_steam_id_64.as_deref(), payload.target_steam_id.as_deref()).await;
+    if resolved_ids.steam_id_64.is_none() {
+        return plain_text_response(StatusCode::BAD_REQUEST, "error", "缺少有效的 SteamID64", 0);
     }
 
     let alternate_steam_id_value = alternate_steam_id(&resolved_ids.steam_id);
@@ -321,7 +319,7 @@ pub async fn sync_unban(
         &resolved_ids
             .steam_id_64
             .clone()
-            .unwrap_or_else(|| resolved_ids.steam_id.clone()),
+            .unwrap_or_default(),
         &format!(
             "ServerID: {}, UpdatedRows: {}, IPs: {}",
             payload.server_id,
@@ -499,18 +497,18 @@ fn authorize_plugin(headers: &HeaderMap) -> Result<(), Response> {
 
 async fn resolve_plugin_steam_identifiers(
     state: &Arc<AppState>,
-    steam_input: &str,
-    preferred_steam_id_64: Option<&str>,
+    primary_input: Option<&str>,
+    fallback_input: Option<&str>,
 ) -> ResolvedPluginSteamIds {
-    let steam_input = steam_input.trim();
     let steam_service = state.steam_service.as_ref();
 
-    let resolved_steam_id_64 = match preferred_steam_id_64
+    let identifier_input = primary_input
         .map(str::trim)
         .filter(|value| !value.is_empty())
-    {
-        Some(value) => Some(value.to_string()),
-        None if !steam_input.is_empty() => steam_service.resolve_steam_id(steam_input).await,
+        .or_else(|| fallback_input.map(str::trim).filter(|value| !value.is_empty()));
+
+    let resolved_steam_id_64 = match identifier_input {
+        Some(value) => steam_service.resolve_steam_id(value).await,
         None => None,
     };
 
@@ -518,14 +516,14 @@ async fn resolve_plugin_steam_identifiers(
         return ResolvedPluginSteamIds {
             steam_id: steam_service
                 .id64_to_id2(&steam_id_64)
-                .unwrap_or_else(|| steam_input.to_string()),
+                .unwrap_or_else(|| steam_id_64.clone()),
             steam_id_3: steam_service.id64_to_id3(&steam_id_64),
             steam_id_64: Some(steam_id_64),
         };
     }
 
     ResolvedPluginSteamIds {
-        steam_id: steam_input.to_string(),
+        steam_id: identifier_input.unwrap_or("").to_string(),
         steam_id_3: None,
         steam_id_64: None,
     }

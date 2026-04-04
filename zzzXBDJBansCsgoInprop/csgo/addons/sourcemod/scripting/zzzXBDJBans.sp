@@ -9,6 +9,8 @@
 #define DEFAULT_ACCESS_CHECK_URL "http://127.0.0.1:3000/api/plugin/access-check"
 #define DEFAULT_BAN_URL "http://127.0.0.1:3000/api/plugin/ban"
 #define DEFAULT_UNBAN_URL "http://127.0.0.1:3000/api/plugin/unban"
+#define INTERNAL_BAN_COMMAND "zzzxbdjbans_sysban"
+#define INTERNAL_UNBAN_COMMAND "zzzxbdjbans_sysunban"
 
 public Plugin myinfo =
 {
@@ -48,6 +50,9 @@ public void OnPluginStart()
     g_cvFailOpen = CreateConVar("zzzxbdjbans_fail_open", "1", "Allow players to stay connected when the backend or database is temporarily unavailable.");
     g_cvFailureRetryLimit = CreateConVar("zzzxbdjbans_failure_retry_limit", "2", "How many backend failure retries are attempted before enforcing denial.", _, true, 0.0, true, 10.0);
     g_cvRetryMaxDelay = CreateConVar("zzzxbdjbans_retry_max_delay", "30", "Maximum retry delay in seconds for pending/backend failures.", _, true, 2.0, true, 120.0);
+
+    RegServerCmd(INTERNAL_BAN_COMMAND, Command_InternalBan, "Internal XBDJBans local-only IP ban");
+    RegServerCmd(INTERNAL_UNBAN_COMMAND, Command_InternalUnban, "Internal XBDJBans local-only unban cleanup");
 
     bool commandListenerAvailable = GetFeatureStatus(FeatureType_Capability, FEATURECAP_COMMANDLISTENER) == FeatureStatus_Available;
 
@@ -275,12 +280,13 @@ Action HandlePlayerUnbanCommand(int client, int args)
     }
 
     char resolvedSteamTarget[64];
-    if (!ResolveUnbanTarget(client, targetInput, resolvedSteamTarget, sizeof(resolvedSteamTarget)))
+    char resolvedSteamTarget64[64];
+    if (!ResolveUnbanTarget(client, targetInput, resolvedSteamTarget, sizeof(resolvedSteamTarget), resolvedSteamTarget64, sizeof(resolvedSteamTarget64)))
     {
         return Plugin_Handled;
     }
 
-    if (!SendUnbanSyncRequest(client, resolvedSteamTarget))
+    if (!SendUnbanSyncRequest(client, resolvedSteamTarget, resolvedSteamTarget64))
     {
         ReplyToCommand(client, "[XBDJBans] 解封同步请求发送失败。");
     }
@@ -298,12 +304,13 @@ Action HandlePlayerUnbanTextCommand(int client, const char[] payload)
     }
 
     char resolvedSteamTarget[64];
-    if (!ResolveUnbanTarget(client, targetInput, resolvedSteamTarget, sizeof(resolvedSteamTarget)))
+    char resolvedSteamTarget64[64];
+    if (!ResolveUnbanTarget(client, targetInput, resolvedSteamTarget, sizeof(resolvedSteamTarget), resolvedSteamTarget64, sizeof(resolvedSteamTarget64)))
     {
         return Plugin_Handled;
     }
 
-    if (!SendUnbanSyncRequest(client, resolvedSteamTarget))
+    if (!SendUnbanSyncRequest(client, resolvedSteamTarget, resolvedSteamTarget64))
     {
         ReplyToCommand(client, "[XBDJBans] 解封同步请求发送失败。");
     }
@@ -353,7 +360,7 @@ Action HandleServerUnbanCommand(int args)
 {
     if (args < 1)
     {
-        PrintToServer("[XBDJBans] Usage: sm_unban <steamid|ip>");
+        PrintToServer("[XBDJBans] Usage: sm_unban <steamid|steamid64|ip>");
         return Plugin_Handled;
     }
 
@@ -364,16 +371,174 @@ Action HandleServerUnbanCommand(int args)
 
     if (target[0] == '\0')
     {
-        PrintToServer("[XBDJBans] Usage: sm_unban <steamid|ip>");
+        PrintToServer("[XBDJBans] Usage: sm_unban <steamid|steamid64|ip>");
         return Plugin_Handled;
     }
 
-    if (!SendUnbanSyncRequest(0, target))
+    if (!SendUnbanSyncRequest(0, target, target))
     {
         PrintToServer("[XBDJBans] Unban sync request failed.");
         return Plugin_Handled;
     }
 
+    return Plugin_Handled;
+}
+
+public Action Command_InternalBan(int args)
+{
+    if (args < 2)
+    {
+        PrintToServer("[XBDJBans] Usage: %s <#userid|steamid|steamid64> <minutes|0> [reason]", INTERNAL_BAN_COMMAND);
+        return Plugin_Handled;
+    }
+
+    char targetArg[64];
+    int minutes;
+    char reason[256];
+    if (!ParseBanCommandArguments(targetArg, sizeof(targetArg), minutes, reason, sizeof(reason), false))
+    {
+        PrintToServer("[XBDJBans] Usage: %s <#userid|steamid|steamid64> <minutes|0> [reason]", INTERNAL_BAN_COMMAND);
+        return Plugin_Handled;
+    }
+
+    int target = ResolveServerTarget(targetArg);
+    if (target <= 0 || !IsClientInGame(target) || IsFakeClient(target))
+    {
+        PrintToServer("[XBDJBans] Internal ban target is not online.");
+        return Plugin_Handled;
+    }
+
+    char targetIp[32];
+    if (!GetClientIP(target, targetIp, sizeof(targetIp), true))
+    {
+        PrintToServer("[XBDJBans] Internal ban failed: missing target IP.");
+        return Plugin_Handled;
+    }
+
+    if (reason[0] == '\0')
+    {
+        strcopy(reason, sizeof(reason), "Banned");
+    }
+
+    if (!ApplyLocalIpBan(GetClientUserId(target), targetIp, minutes, reason, 0))
+    {
+        PrintToServer("[XBDJBans] Internal local IP ban failed.");
+    }
+
+    return Plugin_Handled;
+}
+
+public Action Command_InternalUnban(int args)
+{
+    if (args < 1)
+    {
+        PrintToServer("[XBDJBans] Usage: %s <primary-steamid> [steamid2] [steamid3] [ips]", INTERNAL_UNBAN_COMMAND);
+        return Plugin_Handled;
+    }
+
+    char requestedSteamId[64];
+    char steamId2[64];
+    char steamId3[64];
+    char ips[512];
+
+    GetCmdArg(1, requestedSteamId, sizeof(requestedSteamId));
+    StripQuotes(requestedSteamId);
+    TrimString(requestedSteamId);
+
+    if (args >= 2)
+    {
+        GetCmdArg(2, steamId2, sizeof(steamId2));
+        StripQuotes(steamId2);
+        TrimString(steamId2);
+    }
+    else
+    {
+        steamId2[0] = '\0';
+    }
+
+    if (args >= 3)
+    {
+        GetCmdArg(3, steamId3, sizeof(steamId3));
+        StripQuotes(steamId3);
+        TrimString(steamId3);
+    }
+    else
+    {
+        steamId3[0] = '\0';
+    }
+
+    if (args >= 4)
+    {
+        GetCmdArg(4, ips, sizeof(ips));
+        StripQuotes(ips);
+        TrimString(ips);
+    }
+    else
+    {
+        ips[0] = '\0';
+    }
+
+    if (requestedSteamId[0] == '\0')
+    {
+        PrintToServer("[XBDJBans] Internal unban failed: missing SteamID.");
+        return Plugin_Handled;
+    }
+
+    char resolvedSteamId2[64];
+    char resolvedSteamId64[64];
+    char resolvedSteamId3[64];
+    resolvedSteamId2[0] = '\0';
+    resolvedSteamId64[0] = '\0';
+    resolvedSteamId3[0] = '\0';
+
+    if (IsSteamId64String(requestedSteamId))
+    {
+        strcopy(resolvedSteamId64, sizeof(resolvedSteamId64), requestedSteamId);
+    }
+    else if (IsSteamId2String(requestedSteamId))
+    {
+        strcopy(resolvedSteamId2, sizeof(resolvedSteamId2), requestedSteamId);
+    }
+    else if (IsSteamId3String(requestedSteamId))
+    {
+        strcopy(resolvedSteamId3, sizeof(resolvedSteamId3), requestedSteamId);
+    }
+
+    if (steamId2[0] != '\0')
+    {
+        if (IsSteamId64String(steamId2))
+        {
+            strcopy(resolvedSteamId64, sizeof(resolvedSteamId64), steamId2);
+        }
+        else if (IsSteamId2String(steamId2))
+        {
+            strcopy(resolvedSteamId2, sizeof(resolvedSteamId2), steamId2);
+        }
+        else if (IsSteamId3String(steamId2))
+        {
+            strcopy(resolvedSteamId3, sizeof(resolvedSteamId3), steamId2);
+        }
+    }
+
+    if (steamId3[0] != '\0')
+    {
+        if (IsSteamId64String(steamId3))
+        {
+            strcopy(resolvedSteamId64, sizeof(resolvedSteamId64), steamId3);
+        }
+        else if (IsSteamId2String(steamId3))
+        {
+            strcopy(resolvedSteamId2, sizeof(resolvedSteamId2), steamId3);
+        }
+        else if (IsSteamId3String(steamId3))
+        {
+            strcopy(resolvedSteamId3, sizeof(resolvedSteamId3), steamId3);
+        }
+    }
+
+    int removedCount = 0;
+    int failedCount = 0;
+    ApplyLocalUnbanCleanup(requestedSteamId, resolvedSteamId2, resolvedSteamId64, resolvedSteamId3, ips, 0, removedCount, failedCount);
     return Plugin_Handled;
 }
 
@@ -592,11 +757,14 @@ int ResolveServerTarget(const char[] targetArg)
     return FindConnectedClientByName(targetArg);
 }
 
-bool ResolveUnbanTarget(int client, const char[] targetInput, char[] steamTarget, int steamTargetLen)
+bool ResolveUnbanTarget(int client, const char[] targetInput, char[] steamTarget, int steamTargetLen, char[] steamTarget64, int steamTarget64Len)
 {
+    steamTarget64[0] = '\0';
+
     if (LooksLikeSteamIdentifier(targetInput))
     {
         strcopy(steamTarget, steamTargetLen, targetInput);
+        strcopy(steamTarget64, steamTarget64Len, targetInput);
         return true;
     }
 
@@ -607,8 +775,12 @@ bool ResolveUnbanTarget(int client, const char[] targetInput, char[] steamTarget
         return false;
     }
 
-    if (!GetClientAuthId(target, AuthId_SteamID64, steamTarget, steamTargetLen))
-        if (!GetClientAuthId(target, AuthId_Steam2, steamTarget, steamTargetLen))
+    if (!GetClientAuthId(target, AuthId_SteamID64, steamTarget64, steamTarget64Len))
+    {
+        steamTarget64[0] = '\0';
+    }
+
+    if (!GetClientAuthId(target, AuthId_Steam2, steamTarget, steamTargetLen))
         {
             ReplyToCommand(client, "[XBDJBans] 无法获取目标玩家的 SteamID。");
             return false;
@@ -706,7 +878,7 @@ bool SendBanSyncRequest(int client, int target, int minutes, const char[] reason
     return true;
 }
 
-bool SendUnbanSyncRequest(int client, const char[] steamTarget)
+bool SendUnbanSyncRequest(int client, const char[] steamTarget, const char[] steamTarget64)
 {
     char apiUrl[256];
     char apiToken[128];
@@ -747,6 +919,7 @@ bool SendUnbanSyncRequest(int client, const char[] steamTarget)
     SteamWorks_SetHTTPRequestGetOrPostParameter(request, "admin_name", adminName);
     SteamWorks_SetHTTPRequestGetOrPostParameter(request, "admin_steam_id_64", adminSteamId64);
     SteamWorks_SetHTTPRequestGetOrPostParameter(request, "target_steam_id", steamTarget);
+    SteamWorks_SetHTTPRequestGetOrPostParameter(request, "target_steam_id_64", steamTarget64);
     SteamWorks_SetHTTPCallbacks(request, OnUnbanSyncCompleted, INVALID_FUNCTION, INVALID_FUNCTION, GetMyHandle());
 
     if (!SteamWorks_SendHTTPRequest(request))
@@ -1085,6 +1258,7 @@ void ApplyLocalUnbanCleanup(
     AddUniqueString(authTargets, sizeof(authTargets), sizeof(authTargets[]), authCount, steamId3);
 
     bool ranWriteId = false;
+    bool ranWriteIp = false;
     for (int i = 0; i < authCount; i++)
     {
         if (RemoveBan(authTargets[i], BANFLAG_AUTHID, "sm_unban", source))
@@ -1097,12 +1271,19 @@ void ApplyLocalUnbanCleanup(
         }
 
         ServerCommand("removeid \"%s\"", authTargets[i]);
+        ServerCommand("removeip \"%s\"", authTargets[i]);
         ranWriteId = true;
+        ranWriteIp = true;
     }
 
     if (ranWriteId)
     {
         ServerCommand("writeid");
+    }
+
+    if (ranWriteIp)
+    {
+        ServerCommand("writeip");
     }
 
     ApplyLocalIpUnbanList(ips, source, removedCount, failedCount);

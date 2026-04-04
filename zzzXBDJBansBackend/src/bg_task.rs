@@ -210,7 +210,7 @@ async fn check_server(
                 &address,
                 password,
                 &format!(
-                    "sm_ban #{} {} \"{}\"",
+                    "zzzxbdjbans_sysban #{} {} \"{}\"",
                     player.userid, ip_ban.duration, "同IP关联封禁 (Detected online with Banned IP)"
                 ),
             )
@@ -239,22 +239,32 @@ async fn insert_background_ban(
     ip_ban: &ActiveIpBan,
     server_id: i64,
 ) -> Result<bool, sqlx::Error> {
+    let steam_id_64 = state.steam_service.resolve_steam_id(&player.steam_id).await;
+    let steam_id_3 = steam_id_64
+        .as_deref()
+        .and_then(|value| state.steam_service.id64_to_id3(value));
+
     let result = sqlx::query(
         "INSERT INTO bans (
-            name, steam_id, ip, ban_type, reason, duration, admin_name, expires_at, created_at, status, server_id
+            name, steam_id, steam_id_3, steam_id_64, ip, ban_type, reason, duration, admin_name, expires_at, created_at, status, server_id
          )
          SELECT
-            $1, $2, $3, 'account', $4, $5, 'System (BG Monitor)', $6, NOW(), 'active', $7
+            $1, $2, $3, $4, $5, 'account', $6, $7, 'System (BG Monitor)', $8, NOW(), 'active', $9
          WHERE NOT EXISTS (
             SELECT 1
             FROM bans
             WHERE status = 'active'
-              AND steam_id = $2
+              AND (
+                  steam_id = $2
+                  OR ($4 IS NOT NULL AND steam_id_64 = $4)
+              )
               AND (expires_at IS NULL OR expires_at > NOW())
          )",
     )
     .bind(&player.name)
     .bind(&player.steam_id)
+    .bind(&steam_id_3)
+    .bind(&steam_id_64)
     .bind(&player.ip)
     .bind("同IP关联封禁 (Detected online with Banned IP)")
     .bind(&ip_ban.duration)

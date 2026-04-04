@@ -376,7 +376,16 @@ pub async fn create_ban(
     Json(payload): Json<CreateBanRequest>,
 ) -> impl IntoResponse {
     let expires_at = calculate_expires_at(&payload.duration);
-    let resolved_ids = resolve_ban_steam_identifiers(&state, &payload.steam_id).await;
+    let resolved_ids = match resolve_required_ban_steam_identifiers(
+        &state,
+        payload.steam_id_64.as_deref(),
+        payload.steam_id.as_deref(),
+    )
+    .await
+    {
+        Ok(ids) => ids,
+        Err(message) => return (StatusCode::BAD_REQUEST, Json(message)).into_response(),
+    };
 
     let result = sqlx::query_as::<_, Ban>(
         "INSERT INTO bans (name, steam_id, steam_id_3, steam_id_64, ip, ban_type, reason, duration, admin_name, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *"
@@ -400,14 +409,7 @@ pub async fn create_ban(
                 &state.db,
                 &user.sub,
                 "create_ban",
-                &format!(
-                    "User: {}, SteamID64: {}",
-                    payload.name,
-                    resolved_ids
-                        .steam_id_64
-                        .clone()
-                        .unwrap_or_else(|| resolved_ids.steam_id.clone())
-                ),
+                &format!("User: {}, SteamID64: {}", payload.name, resolved_ids.steam_id_64),
                 &format!(
                     "Reason: {}, Duration: {}",
                     payload.reason.clone().unwrap_or_default(),
@@ -477,12 +479,25 @@ pub async fn update_ban(
     let current_is_effectively_active = is_effectively_active(&current);
 
     let name = payload.name.unwrap_or(current.name);
-    let resolved_ids = match payload.steam_id {
-        Some(steam_id) => resolve_ban_steam_identifiers(&state, &steam_id).await,
-        None => ResolvedBanSteamIds {
+    let resolved_ids = match (
+        payload.steam_id_64.as_deref().filter(|value| !value.trim().is_empty()),
+        payload.steam_id.as_deref().filter(|value| !value.trim().is_empty()),
+    ) {
+        (Some(steam_id_64_input), _) | (None, Some(steam_id_64_input)) => {
+            match resolve_required_ban_steam_identifiers(&state, Some(steam_id_64_input), None)
+                .await
+            {
+                Ok(ids) => ids,
+                Err(message) => return (StatusCode::BAD_REQUEST, Json(message)).into_response(),
+            }
+        }
+        (None, None) => ResolvedBanSteamIds {
             steam_id: current.steam_id.clone(),
             steam_id_3: current.steam_id_3.clone(),
-            steam_id_64: current.steam_id_64.clone(),
+            steam_id_64: current
+                .steam_id_64
+                .clone()
+                .unwrap_or_else(|| current.steam_id.clone()),
         },
     };
     let ip = payload.ip.unwrap_or(current.ip);
@@ -601,7 +616,7 @@ pub async fn update_ban(
 struct ResolvedBanSteamIds {
     steam_id: String,
     steam_id_3: Option<String>,
-    steam_id_64: Option<String>,
+    steam_id_64: String,
 }
 
 fn is_effectively_active(ban: &Ban) -> bool {
@@ -642,7 +657,7 @@ fn build_live_enforcement_command(ban: &Ban, userid: i32) -> String {
         }
         _ => {
             let minutes = duration_to_server_ban_minutes(&ban.duration).unwrap_or(0);
-            format!("sm_ban #{} {} \"{}\"", userid, minutes, reason)
+            format!("zzzxbdjbans_sysban #{} {} \"{}\"", userid, minutes, reason)
         }
     }
 }
@@ -728,19 +743,18 @@ async fn enforce_ban_on_online_players(
 }
 
 fn unban_commands_for_ban(ban: &Ban) -> Vec<String> {
-    let mut commands = Vec::new();
-
     let steam_id = ban.steam_id.trim();
-    if !steam_id.is_empty() && steam_id != "Unknown" {
-        commands.push(format!("sm_unban \"{}\"", steam_id));
+    if steam_id.is_empty() || steam_id == "Unknown" {
+        return Vec::new();
     }
 
-    let ip = ban.ip.trim();
-    if !ip.is_empty() && ip != "0.0.0.0" {
-        commands.push(format!("sm_unban \"{}\"", ip));
-    }
-
-    commands
+    vec![format!(
+        "zzzxbdjbans_sysunban \"{}\" \"{}\" \"{}\" \"{}\"",
+        ban.steam_id_64.as_deref().unwrap_or(steam_id),
+        steam_id,
+        ban.steam_id_3.as_deref().unwrap_or(""),
+        ban.ip.trim()
+    )]
 }
 
 async fn unban_ban_on_servers(ban: &Ban, servers: &[Server]) -> Vec<String> {
@@ -766,26 +780,43 @@ async fn unban_ban_on_servers(ban: &Ban, servers: &[Server]) -> Vec<String> {
     failures
 }
 
-async fn resolve_ban_steam_identifiers(
+async fn resolve_required_ban_steam_identifiers(
     state: &Arc<AppState>,
-    steam_id_input: &str,
-) -> ResolvedBanSteamIds {
-    let steam_id_input = steam_id_input.trim();
+    primary_input: Option<&str>,
+    fallback_input: Option<&str>,
+) -> Result<ResolvedBanSteamIds, String> {
+    let identifier_input = primary_input
+        .and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        })
+        .or_else(|| {
+            fallback_input.and_then(|value| {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            })
+        })
+        .ok_or_else(|| "Missing SteamID64".to_string())?;
+
     let steam_service = state.steam_service.as_ref();
 
-    match steam_service.resolve_steam_id(steam_id_input).await {
-        Some(steam_id_64) => ResolvedBanSteamIds {
+    match steam_service.resolve_steam_id(identifier_input).await {
+        Some(steam_id_64) => Ok(ResolvedBanSteamIds {
             steam_id: steam_service
                 .id64_to_id2(&steam_id_64)
-                .unwrap_or_else(|| steam_id_input.to_string()),
+                .unwrap_or_else(|| identifier_input.to_string()),
             steam_id_3: steam_service.id64_to_id3(&steam_id_64),
-            steam_id_64: Some(steam_id_64),
-        },
-        None => ResolvedBanSteamIds {
-            steam_id: steam_id_input.to_string(),
-            steam_id_3: None,
-            steam_id_64: None,
-        },
+            steam_id_64,
+        }),
+        None => Err("Invalid SteamID64".to_string()),
     }
 }
 
