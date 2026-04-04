@@ -30,6 +30,12 @@ enum InterruptRestoreState
 	InterruptRestoreState_Rejected
 }
 
+enum InterruptSaveRequestKind
+{
+	InterruptSaveRequestKind_Auto = 0,
+	InterruptSaveRequestKind_Manual
+}
+
 ConVar gCV_InterruptPauseDebug;
 ConVar gCV_InterruptPauseServerId;
 ConVar gCV_InterruptPauseApiBaseUrl;
@@ -43,6 +49,7 @@ bool gB_AutoInterruptSaveOnDisconnect[MAXPLAYERS + 1];
 bool gB_HasPendingInterrupt[MAXPLAYERS + 1];
 bool gB_CanShowPendingInterruptMenu[MAXPLAYERS + 1];
 bool gB_PendingInterruptMenuDisplayed[MAXPLAYERS + 1];
+bool gB_ManualInterruptSaveInFlight[MAXPLAYERS + 1];
 bool gB_HasSafeSnapshot[MAXPLAYERS + 1];
 float gF_PendingInterruptTime[MAXPLAYERS + 1];
 float gF_NextPeriodicSnapshotAt[MAXPLAYERS + 1];
@@ -128,6 +135,7 @@ public void OnClientPutInServer(int client)
 	gB_AutoInterruptSaveOnDisconnect[client] = false;
 	gB_CanShowPendingInterruptMenu[client] = false;
 	gB_PendingInterruptMenuDisplayed[client] = false;
+	gB_ManualInterruptSaveInFlight[client] = false;
 	ResetRunMonitorState(client);
 	ResetPendingInterruptState(client);
 	SchedulePendingInterruptRefresh(client, 0.5);
@@ -146,6 +154,7 @@ public void OnClientAuthorized(int client, const char[] auth)
 public void OnClientDisconnect(int client)
 {
 	gB_CanRestoreThisConnection[client] = false;
+	gB_ManualInterruptSaveInFlight[client] = false;
 	ResetRunMonitorState(client);
 	ResetPendingInterruptState(client);
 }
@@ -177,6 +186,12 @@ public Action Command_InterruptPause(int client, int args)
 		return Plugin_Handled;
 	}
 
+	if (gB_ManualInterruptSaveInFlight[client])
+	{
+		ReplyToCommand(client, "[InterruptPause] 中断保存请求仍在处理中，请稍候再试。");
+		return Plugin_Handled;
+	}
+
 	char reason[192];
 	if (!GetInterruptSaveEligibilityFailure(client, reason, sizeof(reason)))
 	{
@@ -193,7 +208,7 @@ public Action Command_InterruptPause(int client, int args)
 		return Plugin_Handled;
 	}
 
-	bool wrote = WriteSnapshot(client, snapshot);
+	bool wrote = WriteSnapshot(client, snapshot, InterruptSaveRequestKind_Manual);
 	CleanupSnapshot(snapshot);
 	if (!wrote)
 	{
@@ -202,13 +217,7 @@ public Action Command_InterruptPause(int client, int args)
 		return Plugin_Handled;
 	}
 
-	DebugLog("save success for client=%N auth=%s map=%s time=%.3f cps=%d tps=%d", client, snapshot.auth, snapshot.map, snapshot.time, snapshot.checkpointCount, snapshot.teleportCount);
-	gB_CanRestoreThisConnection[client] = false;
-	ResetRunMonitorState(client);
-	ResetPendingInterruptState(client);
-	GOKZ_StopTimer(client, false);
-
-	ReplyToCommand(client, "[InterruptPause] 已保存进度并中断本次计时；你现在可以继续自由移动。重新进服并回到相同地图后会弹出恢复菜单。");
+	ReplyToCommand(client, "[InterruptPause] 正在保存中断进度，请稍候...");
 	return Plugin_Handled;
 }
 
@@ -394,14 +403,14 @@ Handle CreateInterruptPauseRequest(int client, const char[] endpoint)
 	return request;
 }
 
-bool SendInterruptPauseRequest(Handle request, SteamWorksHTTPRequestCompleted callback, int client)
+bool SendInterruptPauseRequest(Handle request, SteamWorksHTTPRequestCompleted callback, int client, any contextData2 = 0)
 {
 	if (request == null)
 	{
 		return false;
 	}
 
-	SteamWorks_SetHTTPRequestContextValue(request, GetClientUserId(client), 0);
+	SteamWorks_SetHTTPRequestContextValue(request, GetClientUserId(client), contextData2);
 	SteamWorks_SetHTTPCallbacks(request, callback, INVALID_FUNCTION, INVALID_FUNCTION, GetMyHandle());
 	if (!SteamWorks_SendHTTPRequest(request))
 	{
@@ -619,7 +628,7 @@ void TryAutoSaveSnapshotOnDisconnect(int client)
 		return;
 	}
 
-	WriteSnapshot(client, snapshot);
+	WriteSnapshot(client, snapshot, InterruptSaveRequestKind_Auto);
 	CleanupSnapshot(snapshot);
 }
 
@@ -1067,20 +1076,53 @@ public int OnPeekInterruptPauseSnapshotCompleted(Handle request, bool failure, b
 	return 0;
 }
 
-public int OnWriteInterruptPauseSnapshotCompleted(Handle request, bool failure, bool requestSuccessful, EHTTPStatusCode statusCode, any contextData)
+public int OnWriteInterruptPauseSnapshotCompleted(Handle request, bool failure, bool requestSuccessful, EHTTPStatusCode statusCode, any contextData, any contextData2)
 {
 	int client = GetClientOfUserId(contextData);
-	char body[512];
+	InterruptSaveRequestKind saveKind = view_as<InterruptSaveRequestKind>(contextData2);
+	char body[INTERRUPT_RESPONSE_MAX];
+	char message[256];
 	body[0] = '\0';
+	message[0] = '\0';
 	ReadInterruptPauseResponseBody(request, body, sizeof(body));
 	CloseHandle(request);
+	ExtractInterruptPauseResponseValue(body, "message=", message, sizeof(message));
+
+	if (saveKind == InterruptSaveRequestKind_Manual && client > 0 && client <= MaxClients)
+	{
+		gB_ManualInterruptSaveInFlight[client] = false;
+	}
 
 	if (!failure && requestSuccessful && view_as<int>(statusCode) < 400)
 	{
+		if (saveKind == InterruptSaveRequestKind_Manual
+			&& client > 0
+			&& client <= MaxClients
+			&& IsClientInGame(client)
+			&& !IsFakeClient(client))
+		{
+			gB_CanRestoreThisConnection[client] = false;
+			ResetRunMonitorState(client);
+			ResetPendingInterruptState(client);
+			GOKZ_StopTimer(client, false);
+			ReplyToCommand(client, "[InterruptPause] 已保存进度并中断本次计时；你现在可以继续自由移动。重新进服并回到相同地图后会弹出恢复菜单。");
+		}
 		return 0;
 	}
 
-	if (client > 0 && client <= MaxClients && IsClientInGame(client))
+	if (saveKind == InterruptSaveRequestKind_Manual
+		&& client > 0
+		&& client <= MaxClients
+		&& IsClientInGame(client)
+		&& !IsFakeClient(client))
+	{
+		if (message[0] == '\0')
+		{
+			strcopy(message, sizeof(message), "保存失败，无法写入后端中断存档。");
+		}
+		ReplyToCommand(client, "[InterruptPause] %s", message);
+	}
+	else if (client > 0 && client <= MaxClients && IsClientInGame(client))
 	{
 		DebugLog("interrupt snapshot save failed for client=%N status=%d body=%s", client, view_as<int>(statusCode), body);
 	}
@@ -1471,11 +1513,11 @@ void RequestAsyncSnapshotWriteWithCurrentSnapshot(int client, bool disconnectSav
 		return;
 	}
 
-	WriteSnapshotAsync(client, snapshot);
+	WriteSnapshotAsync(client, snapshot, InterruptSaveRequestKind_Auto);
 	CleanupSnapshot(snapshot);
 }
 
-bool WriteSnapshotAsync(int client, const InterruptSnapshot snapshot)
+bool WriteSnapshotAsync(int client, const InterruptSnapshot snapshot, InterruptSaveRequestKind saveKind)
 {
 	char payload[SNAPSHOT_PAYLOAD_MAX];
 	if (!SerializeSnapshotPayload(snapshot, payload, sizeof(payload)))
@@ -1515,8 +1557,17 @@ bool WriteSnapshotAsync(int client, const InterruptSnapshot snapshot)
 	SteamWorks_SetHTTPRequestGetOrPostParameter(request, "storage_version", buffer);
 	SteamWorks_SetHTTPRequestGetOrPostParameter(request, "payload", payload);
 
-	if (!SendInterruptPauseRequest(request, OnWriteInterruptPauseSnapshotCompleted, client))
+	if (saveKind == InterruptSaveRequestKind_Manual)
 	{
+		gB_ManualInterruptSaveInFlight[client] = true;
+	}
+
+	if (!SendInterruptPauseRequest(request, OnWriteInterruptPauseSnapshotCompleted, client, saveKind))
+	{
+		if (saveKind == InterruptSaveRequestKind_Manual)
+		{
+			gB_ManualInterruptSaveInFlight[client] = false;
+		}
 		DebugLog("interrupt async write failed: send request failed auth=%s", snapshot.auth);
 		return false;
 	}
@@ -1998,9 +2049,9 @@ bool DeserializeSnapshotPayload(const char[] auth, const char[] payload, Interru
 	return snapshot.exists;
 }
 
-bool WriteSnapshot(int client, const InterruptSnapshot snapshot)
+bool WriteSnapshot(int client, const InterruptSnapshot snapshot, InterruptSaveRequestKind saveKind = InterruptSaveRequestKind_Auto)
 {
-	return WriteSnapshotAsync(client, snapshot);
+	return WriteSnapshotAsync(client, snapshot, saveKind);
 }
 
 void DebugLog(const char[] fmt, any ...)

@@ -20,6 +20,7 @@ use crate::{
 };
 
 const PLUGIN_TOKEN_HEADER: &str = "x-plugin-token";
+const INTERRUPT_PAUSE_COOLDOWN_HOURS: i64 = 24;
 
 #[allow(dead_code)]
 #[derive(Debug, FromRow)]
@@ -278,6 +279,10 @@ pub async fn save_interrupt_pause_snapshot(
     }
 
     let auth_primary = payload.auth_primary.trim();
+    let auth_steamid64 = normalize_optional(payload.auth_steamid64.as_deref());
+    let auth_steam3 = normalize_optional(payload.auth_steam3.as_deref());
+    let auth_steam2 = normalize_optional(payload.auth_steam2.as_deref());
+    let auth_engine = normalize_optional(payload.auth_engine.as_deref());
     let ip_address = payload.ip_address.trim();
     let map_name = payload.map_name.trim();
     let raw_payload = payload.payload.trim();
@@ -297,6 +302,34 @@ pub async fn save_interrupt_pause_snapshot(
         .filter(|value| !value.is_empty())
         .unwrap_or("Unknown");
 
+    let lookup_payload = PluginInterruptPauseLookupRequest {
+        server_id: payload.server_id,
+        auth_primary: Some(auth_primary.to_string()),
+        auth_steamid64: Some(auth_steamid64.clone()),
+        auth_steam3: Some(auth_steam3.clone()),
+        auth_steam2: Some(auth_steam2.clone()),
+        auth_engine: Some(auth_engine.clone()),
+    };
+
+    match lookup_recent_restored_snapshot(&state, &lookup_payload).await {
+        Ok(Some(restored_at)) => {
+            return plugin_text_response(
+                StatusCode::CONFLICT,
+                "cooldown",
+                &format_interrupt_pause_cooldown_message(restored_at),
+            );
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::error!("Failed to lookup interrupt pause cooldown: {}", e);
+            return plugin_text_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "error",
+                "保存中断存档失败",
+            );
+        }
+    }
+
     let result = sqlx::query(
         "INSERT INTO interrupt_pause_snapshots (
             server_id, auth_primary, auth_steamid64, auth_steam3, auth_steam2, auth_engine,
@@ -312,6 +345,7 @@ pub async fn save_interrupt_pause_snapshot(
             NULL, NULL, NOW(), NOW()
          )
          ON CONFLICT (server_id, auth_primary)
+         WHERE restore_status NOT IN ('restored', 'aborted')
          DO UPDATE SET
             auth_steamid64 = EXCLUDED.auth_steamid64,
             auth_steam3 = EXCLUDED.auth_steam3,
@@ -337,10 +371,10 @@ pub async fn save_interrupt_pause_snapshot(
     )
     .bind(payload.server_id)
     .bind(auth_primary)
-    .bind(normalize_optional(payload.auth_steamid64.as_deref()))
-    .bind(normalize_optional(payload.auth_steam3.as_deref()))
-    .bind(normalize_optional(payload.auth_steam2.as_deref()))
-    .bind(normalize_optional(payload.auth_engine.as_deref()))
+    .bind(auth_steamid64)
+    .bind(auth_steam3)
+    .bind(auth_steam2)
+    .bind(auth_engine)
     .bind(player_name)
     .bind(ip_address)
     .bind(map_name)
@@ -776,12 +810,86 @@ async fn lookup_active_snapshot(
     .await
 }
 
+async fn lookup_recent_restored_snapshot(
+    state: &Arc<AppState>,
+    payload: &PluginInterruptPauseLookupRequest,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, sqlx::Error> {
+    let auth_primary = normalize_optional(payload.auth_primary.as_deref());
+    let auth_steamid64 = normalize_optional(payload.auth_steamid64.as_deref());
+    let auth_steam3 = normalize_optional(payload.auth_steam3.as_deref());
+    let auth_steam2 = normalize_optional(payload.auth_steam2.as_deref());
+    let auth_engine = normalize_optional(payload.auth_engine.as_deref());
+
+    if auth_primary.is_empty()
+        && auth_steamid64.is_empty()
+        && auth_steam3.is_empty()
+        && auth_steam2.is_empty()
+        && auth_engine.is_empty()
+    {
+        return Ok(None);
+    }
+
+    sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>(
+        "SELECT restored_at
+         FROM interrupt_pause_snapshots
+         WHERE restore_status = 'restored'
+           AND restored_at IS NOT NULL
+           AND restored_at > NOW() - INTERVAL '24 hours'
+           AND (
+                ($1 <> '' AND (auth_primary = $1 OR auth_steamid64 = $1 OR auth_steam3 = $1 OR auth_steam2 = $1 OR auth_engine = $1))
+             OR ($2 <> '' AND (auth_primary = $2 OR auth_steamid64 = $2 OR auth_steam3 = $2 OR auth_steam2 = $2 OR auth_engine = $2))
+             OR ($3 <> '' AND (auth_primary = $3 OR auth_steamid64 = $3 OR auth_steam3 = $3 OR auth_steam2 = $3 OR auth_engine = $3))
+             OR ($4 <> '' AND (auth_primary = $4 OR auth_steamid64 = $4 OR auth_steam3 = $4 OR auth_steam2 = $4 OR auth_engine = $4))
+             OR ($5 <> '' AND (auth_primary = $5 OR auth_steamid64 = $5 OR auth_steam3 = $5 OR auth_steam2 = $5 OR auth_engine = $5))
+           )
+         ORDER BY restored_at DESC
+         LIMIT 1",
+    )
+    .bind(auth_primary)
+    .bind(auth_steamid64)
+    .bind(auth_steam3)
+    .bind(auth_steam2)
+    .bind(auth_engine)
+    .fetch_optional(&state.db)
+    .await
+}
+
 fn normalize_optional(value: Option<&str>) -> String {
     value
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("")
         .to_string()
+}
+
+fn format_interrupt_pause_cooldown_message(
+    restored_at: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let unlock_at = restored_at + chrono::Duration::hours(INTERRUPT_PAUSE_COOLDOWN_HOURS);
+    let remaining = unlock_at.signed_duration_since(chrono::Utc::now());
+
+    if remaining.num_seconds() <= 0 {
+        return "24 小时冷却已结束，请重新尝试保存中断进度。".to_string();
+    }
+
+    let total_minutes = remaining.num_minutes().max(1);
+    let hours = total_minutes / 60;
+    let minutes = total_minutes % 60;
+
+    match (hours, minutes) {
+        (0, mins) => format!(
+            "你在 24 小时内已经恢复过一次中断暂停，请在 {} 分钟后再试。",
+            mins
+        ),
+        (hrs, 0) => format!(
+            "你在 24 小时内已经恢复过一次中断暂停，请在 {} 小时后再试。",
+            hrs
+        ),
+        (hrs, mins) => format!(
+            "你在 24 小时内已经恢复过一次中断暂停，请在 {} 小时 {} 分钟后再试。",
+            hrs, mins
+        ),
+    }
 }
 
 fn plugin_snapshot_state_response(
