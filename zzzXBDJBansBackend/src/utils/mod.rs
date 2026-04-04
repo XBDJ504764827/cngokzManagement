@@ -6,6 +6,10 @@ pub fn parse_duration(duration_str: &str) -> Option<Duration> {
         return None; // Special handling elsewhere or infinite
     }
 
+    if let Ok(minutes) = duration_str.parse::<i64>() {
+        return Some(Duration::minutes(minutes));
+    }
+
     let re = Regex::new(r"^(\d+)([a-zA-Z]+)$").unwrap();
     if let Some(caps) = re.captures(duration_str) {
         let value: i64 = caps[1].parse().ok()?;

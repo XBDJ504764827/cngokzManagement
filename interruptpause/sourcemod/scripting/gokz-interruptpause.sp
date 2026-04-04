@@ -285,6 +285,7 @@ public void Event_PlayerSpawn(Event event, const char[] name, bool dontBroadcast
 		return;
 	}
 
+	RefreshPendingInterruptMapMatchState(client);
 	SchedulePendingInterruptMenu(client, 1.0);
 }
 
@@ -697,6 +698,12 @@ void SchedulePendingInterruptMenu(int client, float delay)
 		return;
 	}
 
+	RefreshPendingInterruptMapMatchState(client);
+	if (!gB_PendingInterruptMapMatches[client])
+	{
+		return;
+	}
+
 	if (gH_PendingInterruptMenuTimer[client] != null)
 	{
 		KillTimer(gH_PendingInterruptMenuTimer[client]);
@@ -719,6 +726,12 @@ public Action Timer_ShowPendingInterruptMenu(Handle timer, any userid)
 	}
 
 	if (!IsClientInGame(client) || !gB_HasPendingInterrupt[client])
+	{
+		return Plugin_Stop;
+	}
+
+	RefreshPendingInterruptMapMatchState(client);
+	if (!gB_PendingInterruptMapMatches[client])
 	{
 		return Plugin_Stop;
 	}
@@ -793,11 +806,10 @@ void ShowPendingInterruptMenu(int client)
 	menu.ExitButton = false;
 	menu.Pagination = MENU_NO_PAGINATION;
 	menu.SetTitle(title);
-	menu.AddItem("checkpoint", "1. 存点");
-	menu.AddItem("teleport", "2. 传送");
-	Format(requestLabel, sizeof(requestLabel), "3. %s", requestLabel);
+	menu.AddItem("checkpoint", "存点");
+	menu.AddItem("teleport", "传送");
 	menu.AddItem("request_restore", requestLabel, requestDraw);
-	menu.AddItem("abort", "4. 终止中断");
+	menu.AddItem("abort", "终止中断");
 	menu.Display(client, MENU_TIME_FOREVER);
 	gB_PendingInterruptMenuDisplayed[client] = true;
 }
@@ -1109,9 +1121,7 @@ public int OnPeekInterruptPauseSnapshotCompleted(Handle request, bool failure, b
 	strcopy(gS_PendingInterruptRejectReason[client], sizeof(gS_PendingInterruptRejectReason[]), rejectReason);
 	gI_PendingInterruptRestoreState[client] = ParseInterruptRestoreState(status);
 
-	char currentMap[PLATFORM_MAX_PATH];
-	GetCurrentMap(currentMap, sizeof(currentMap));
-	gB_PendingInterruptMapMatches[client] = StrEqual(currentMap, mapName, false);
+	RefreshPendingInterruptMapMatchState(client);
 
 	if (AbortPendingInterruptForActiveTimer(client))
 	{
@@ -2416,6 +2426,19 @@ bool CanDisplayPendingInterruptMenu(int client)
 		&& gB_CanShowPendingInterruptMenu[client]
 		&& GetClientTeam(client) > CS_TEAM_SPECTATOR
 		&& IsPlayerAlive(client);
+}
+
+void RefreshPendingInterruptMapMatchState(int client)
+{
+	if (client <= 0 || client > MaxClients || !gB_HasPendingInterrupt[client] || gS_PendingInterruptMap[client][0] == '\0')
+	{
+		gB_PendingInterruptMapMatches[client] = false;
+		return;
+	}
+
+	char currentMap[PLATFORM_MAX_PATH];
+	GetCurrentMap(currentMap, sizeof(currentMap));
+	gB_PendingInterruptMapMatches[client] = StrEqual(currentMap, gS_PendingInterruptMap[client], false);
 }
 
 bool ShouldSnapAirborneRestoreToGround(const InterruptSnapshot snapshot, MoveType safeMovetype)

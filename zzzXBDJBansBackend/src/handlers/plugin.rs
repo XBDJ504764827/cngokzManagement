@@ -1,15 +1,16 @@
-use std::{env, sync::Arc};
+use std::{collections::BTreeSet, env, sync::Arc};
 
 use axum::{
     extract::{Form, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
+use chrono::{Duration, Utc};
 use serde::Deserialize;
 use sqlx::Row;
 use utoipa::ToSchema;
 
-use crate::AppState;
+use crate::{utils::log_admin_action, AppState};
 
 const DEFAULT_REQUIRED_RATING: f64 = 3.0;
 const DEFAULT_REQUIRED_LEVEL: i32 = 1;
@@ -25,9 +26,36 @@ pub struct PluginAccessRequest {
     pub ip_address: String,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PluginBanRequest {
+    pub server_id: i64,
+    pub admin_name: Option<String>,
+    pub admin_steam_id_64: Option<String>,
+    pub target_name: Option<String>,
+    pub target_steam_id: String,
+    pub target_steam_id_64: Option<String>,
+    pub target_ip: String,
+    pub duration_minutes: i32,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PluginUnbanRequest {
+    pub server_id: i64,
+    pub admin_name: Option<String>,
+    pub admin_steam_id_64: Option<String>,
+    pub target_steam_id: String,
+}
+
 struct PluginServer {
     id: i64,
     verification_enabled: bool,
+}
+
+struct ResolvedPluginSteamIds {
+    steam_id: String,
+    steam_id_3: Option<String>,
+    steam_id_64: Option<String>,
 }
 
 struct WhitelistDecision {
@@ -51,6 +79,280 @@ struct BanDecision {
     banned_steam_id_64: Option<String>,
     server_id: Option<i64>,
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/plugin/ban",
+    request_body(content = PluginBanRequest, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, description = "Ban stored in backend"),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Invalid plugin token"),
+        (status = 404, description = "Server not found")
+    )
+)]
+pub async fn sync_ban(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Form(payload): Form<PluginBanRequest>,
+) -> impl IntoResponse {
+    if let Err(response) = authorize_plugin(&headers) {
+        return response;
+    }
+
+    match load_server(&state, payload.server_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return plain_text_response(StatusCode::NOT_FOUND, "error", "服务器未注册", 0);
+        }
+        Err(error) => {
+            tracing::error!("Plugin ban sync failed to load server: {}", error);
+            return plain_text_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "error",
+                "封禁同步失败",
+                0,
+            );
+        }
+    }
+
+    let target_ip = payload.target_ip.trim().to_string();
+    if target_ip.is_empty() {
+        return plain_text_response(StatusCode::BAD_REQUEST, "error", "缺少玩家 IP", 0);
+    }
+
+    let resolved_ids = resolve_plugin_steam_identifiers(
+        &state,
+        &payload.target_steam_id,
+        payload.target_steam_id_64.as_deref(),
+    )
+    .await;
+
+    if resolved_ids.steam_id.trim().is_empty() {
+        return plain_text_response(StatusCode::BAD_REQUEST, "error", "缺少玩家 SteamID", 0);
+    }
+
+    let admin_name = normalize_plugin_admin_name(payload.admin_name.as_deref());
+    let admin_actor = plugin_admin_actor(&admin_name, payload.admin_steam_id_64.as_deref());
+    let target_name = normalize_plugin_target_name(payload.target_name.as_deref());
+    let reason = normalize_reason(payload.reason.as_deref());
+    let duration_minutes = payload.duration_minutes.max(0);
+    let duration = plugin_duration_from_minutes(duration_minutes);
+    let expires_at = if duration_minutes > 0 {
+        Some(Utc::now() + Duration::minutes(duration_minutes as i64))
+    } else {
+        None
+    };
+
+    let insert_result = sqlx::query(
+        "INSERT INTO bans (
+            name, steam_id, steam_id_3, steam_id_64, ip, ban_type, reason, duration,
+            admin_name, expires_at, created_at, status, server_id
+         ) VALUES ($1, $2, $3, $4, $5, 'ip', $6, $7, $8, $9, NOW(), 'active', $10)",
+    )
+    .bind(&target_name)
+    .bind(&resolved_ids.steam_id)
+    .bind(&resolved_ids.steam_id_3)
+    .bind(&resolved_ids.steam_id_64)
+    .bind(&target_ip)
+    .bind(&reason)
+    .bind(&duration)
+    .bind(&admin_name)
+    .bind(expires_at)
+    .bind(payload.server_id)
+    .execute(&state.db)
+    .await;
+
+    match insert_result {
+        Ok(_) => {
+            let _ = log_admin_action(
+                &state.db,
+                &admin_actor,
+                "plugin_create_ban",
+                &format!(
+                    "{} ({})",
+                    target_name,
+                    resolved_ids
+                        .steam_id_64
+                        .clone()
+                        .unwrap_or_else(|| resolved_ids.steam_id.clone())
+                ),
+                &format!(
+                    "ServerID: {}, IP: {}, Duration: {}, Reason: {}",
+                    payload.server_id, target_ip, duration, reason
+                ),
+            )
+            .await;
+
+            plain_text_response(StatusCode::OK, "banned", "封禁已同步到网站", 0)
+        }
+        Err(error) => {
+            tracing::error!("Plugin ban sync insert failed: {}", error);
+            plain_text_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "error",
+                "封禁同步失败",
+                0,
+            )
+        }
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/plugin/unban",
+    request_body(content = PluginUnbanRequest, content_type = "application/x-www-form-urlencoded"),
+    responses(
+        (status = 200, description = "Ban removed from backend"),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Invalid plugin token"),
+        (status = 404, description = "No active IP ban found")
+    )
+)]
+pub async fn sync_unban(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Form(payload): Form<PluginUnbanRequest>,
+) -> impl IntoResponse {
+    if let Err(response) = authorize_plugin(&headers) {
+        return response;
+    }
+
+    match load_server(&state, payload.server_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return plain_text_response(StatusCode::NOT_FOUND, "error", "服务器未注册", 0);
+        }
+        Err(error) => {
+            tracing::error!("Plugin unban sync failed to load server: {}", error);
+            return plain_text_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "error",
+                "解封同步失败",
+                0,
+            );
+        }
+    }
+
+    let resolved_ids =
+        resolve_plugin_steam_identifiers(&state, &payload.target_steam_id, None).await;
+    if resolved_ids.steam_id.trim().is_empty() {
+        return plain_text_response(StatusCode::BAD_REQUEST, "error", "缺少玩家 SteamID", 0);
+    }
+
+    let alternate_steam_id_value = alternate_steam_id(&resolved_ids.steam_id);
+
+    let rows = match sqlx::query(
+        "SELECT id, ip
+         FROM bans
+         WHERE status = 'active'
+           AND ban_type = 'ip'
+           AND (
+               ($1 <> '' AND steam_id_64 = $1)
+               OR ($2 <> '' AND steam_id = $2)
+               OR ($3 <> '' AND steam_id = $3)
+               OR ($4 <> '' AND steam_id_3 = $4)
+           )",
+    )
+    .bind(resolved_ids.steam_id_64.as_deref().unwrap_or(""))
+    .bind(&resolved_ids.steam_id)
+    .bind(&alternate_steam_id_value)
+    .bind(resolved_ids.steam_id_3.as_deref().unwrap_or(""))
+    .fetch_all(&state.db)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::error!("Plugin unban sync select failed: {}", error);
+            return plain_text_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "error",
+                "解封同步失败",
+                0,
+            );
+        }
+    };
+
+    if rows.is_empty() {
+        return plain_text_response(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "未找到有效的 IP 封禁记录",
+            0,
+        );
+    }
+
+    let mut ids = Vec::with_capacity(rows.len());
+    let mut ips = BTreeSet::new();
+
+    for row in rows {
+        ids.push(row.get::<i64, _>("id"));
+
+        let ip = row.get::<String, _>("ip");
+        let trimmed = ip.trim();
+        if !trimmed.is_empty() && trimmed != "0.0.0.0" {
+            ips.insert(trimmed.to_string());
+        }
+    }
+
+    if let Err(error) = sqlx::query("UPDATE bans SET status = 'unbanned' WHERE id = ANY($1)")
+        .bind(&ids)
+        .execute(&state.db)
+        .await
+    {
+        tracing::error!("Plugin unban sync update failed: {}", error);
+        return plain_text_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "error",
+            "解封同步失败",
+            0,
+        );
+    }
+
+    let admin_name = normalize_plugin_admin_name(payload.admin_name.as_deref());
+    let admin_actor = plugin_admin_actor(&admin_name, payload.admin_steam_id_64.as_deref());
+    let ips_joined = ips.into_iter().collect::<Vec<_>>().join(",");
+
+    let _ = log_admin_action(
+        &state.db,
+        &admin_actor,
+        "plugin_unban",
+        &resolved_ids
+            .steam_id_64
+            .clone()
+            .unwrap_or_else(|| resolved_ids.steam_id.clone()),
+        &format!(
+            "ServerID: {}, UpdatedRows: {}, IPs: {}",
+            payload.server_id,
+            ids.len(),
+            if ips_joined.is_empty() {
+                "none"
+            } else {
+                ips_joined.as_str()
+            }
+        ),
+    )
+    .await;
+
+    plain_text_response_with_extras(
+        StatusCode::OK,
+        "unbanned",
+        "解封已同步到网站",
+        0,
+        &[
+            ("ips", ips_joined.as_str()),
+            ("steam_id", resolved_ids.steam_id.as_str()),
+            (
+                "steam_id_64",
+                resolved_ids.steam_id_64.as_deref().unwrap_or(""),
+            ),
+            (
+                "steam_id_3",
+                resolved_ids.steam_id_3.as_deref().unwrap_or(""),
+            ),
+        ],
+    )
 }
 
 #[utoipa::path(
@@ -192,6 +494,40 @@ fn authorize_plugin(headers: &HeaderMap) -> Result<(), Response> {
             "无效的插件令牌",
             0,
         ))
+    }
+}
+
+async fn resolve_plugin_steam_identifiers(
+    state: &Arc<AppState>,
+    steam_input: &str,
+    preferred_steam_id_64: Option<&str>,
+) -> ResolvedPluginSteamIds {
+    let steam_input = steam_input.trim();
+    let steam_service = state.steam_service.as_ref();
+
+    let resolved_steam_id_64 = match preferred_steam_id_64
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => Some(value.to_string()),
+        None if !steam_input.is_empty() => steam_service.resolve_steam_id(steam_input).await,
+        None => None,
+    };
+
+    if let Some(steam_id_64) = resolved_steam_id_64 {
+        return ResolvedPluginSteamIds {
+            steam_id: steam_service
+                .id64_to_id2(&steam_id_64)
+                .unwrap_or_else(|| steam_input.to_string()),
+            steam_id_3: steam_service.id64_to_id3(&steam_id_64),
+            steam_id_64: Some(steam_id_64),
+        };
+    }
+
+    ResolvedPluginSteamIds {
+        steam_id: steam_input.to_string(),
+        steam_id_3: None,
+        steam_id_64: None,
     }
 }
 
@@ -507,11 +843,29 @@ fn plain_text_response(
     message: &str,
     retry_after_seconds: u32,
 ) -> Response {
-    let sanitized_message = message.replace('\n', " ").replace('\r', " ");
-    let body = format!(
+    plain_text_response_with_extras(status, action, message, retry_after_seconds, &[])
+}
+
+fn plain_text_response_with_extras(
+    status: StatusCode,
+    action: &str,
+    message: &str,
+    retry_after_seconds: u32,
+    extras: &[(&str, &str)],
+) -> Response {
+    let mut body = format!(
         "action={}\nretry_after={}\nmessage={}\n",
-        action, retry_after_seconds, sanitized_message
+        sanitize_plugin_response_value(action),
+        retry_after_seconds,
+        sanitize_plugin_response_value(message)
     );
+
+    for (key, value) in extras {
+        body.push_str(key);
+        body.push('=');
+        body.push_str(&sanitize_plugin_response_value(value));
+        body.push('\n');
+    }
 
     let mut response = (status, body).into_response();
     response.headers_mut().insert(
@@ -519,4 +873,51 @@ fn plain_text_response(
         HeaderValue::from_static("text/plain; charset=utf-8"),
     );
     response
+}
+
+fn sanitize_plugin_response_value(value: &str) -> String {
+    value.replace('\n', " ").replace('\r', " ")
+}
+
+fn normalize_plugin_admin_name(admin_name: Option<&str>) -> String {
+    admin_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Console")
+        .to_string()
+}
+
+fn normalize_plugin_target_name(target_name: Option<&str>) -> String {
+    target_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Unknown")
+        .to_string()
+}
+
+fn normalize_reason(reason: Option<&str>) -> String {
+    reason
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Banned by admin")
+        .to_string()
+}
+
+fn plugin_duration_from_minutes(duration_minutes: i32) -> String {
+    if duration_minutes <= 0 {
+        "permanent".to_string()
+    } else {
+        format!("{}m", duration_minutes)
+    }
+}
+
+fn plugin_admin_actor(admin_name: &str, admin_steam_id_64: Option<&str>) -> String {
+    let steam_id_64 = admin_steam_id_64
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    match steam_id_64 {
+        Some(steam_id_64) => format!("{} ({})", admin_name, steam_id_64),
+        None => admin_name.to_string(),
+    }
 }

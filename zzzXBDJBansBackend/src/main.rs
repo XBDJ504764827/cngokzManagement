@@ -354,6 +354,8 @@ async fn main() {
             "/api/plugin/access-check",
             post(handlers::plugin::access_check),
         )
+        .route("/api/plugin/ban", post(handlers::plugin::sync_ban))
+        .route("/api/plugin/unban", post(handlers::plugin::sync_unban))
         .route(
             "/api/plugin/interrupt-pause/save",
             post(handlers::interrupt_pause::save_interrupt_pause_snapshot),
