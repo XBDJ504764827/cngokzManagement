@@ -4,7 +4,7 @@ use crate::models::ban::{
     PublicBan, PublicBanListQuery, UpdateBanRequest,
 };
 use crate::models::server::Server;
-use crate::utils::{calculate_expires_at, log_admin_action};
+use crate::utils::{calculate_expires_at, log_admin_action, parse_duration};
 use crate::AppState;
 use axum::{
     extract::{Extension, Path, Query, State},
@@ -12,6 +12,8 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use chrono::Utc;
+use regex::Regex;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
@@ -413,6 +415,28 @@ pub async fn create_ban(
                 ),
             )
             .await;
+
+            match fetch_all_servers(&state).await {
+                Ok(servers) => {
+                    let failures =
+                        enforce_ban_on_online_players(&state, &created_ban, &servers).await;
+                    if !failures.is_empty() {
+                        tracing::warn!(
+                            "Manual ban {} was saved but live enforcement had issues: {:?}",
+                            created_ban.id,
+                            failures
+                        );
+                    }
+                }
+                Err(error) => {
+                    tracing::error!(
+                        "Manual ban {} was saved but servers could not be loaded for live enforcement: {}",
+                        created_ban.id,
+                        error
+                    );
+                }
+            }
+
             (StatusCode::CREATED, Json(created_ban)).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -449,6 +473,8 @@ pub async fn update_ban(
         Ok(None) => return (StatusCode::NOT_FOUND, Json("Ban not found")).into_response(),
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
+    let current_for_live_sync = current.clone();
+    let current_is_effectively_active = is_effectively_active(&current);
 
     let name = payload.name.unwrap_or(current.name);
     let resolved_ids = match payload.steam_id {
@@ -471,6 +497,38 @@ pub async fn update_ban(
         None => (current.duration, current.expires_at),
     };
     let status = payload.status.unwrap_or(current.status);
+    let will_unban_live_servers = current_is_effectively_active && status == "unbanned";
+
+    if will_unban_live_servers {
+        let servers = match fetch_all_servers(&state).await {
+            Ok(servers) => servers,
+            Err(error) => {
+                tracing::error!("Failed to load servers for ban {} unban: {}", id, error);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(format!("Failed to load servers for unban: {}", error)),
+                )
+                    .into_response();
+            }
+        };
+
+        let unban_failures = unban_ban_on_servers(&current_for_live_sync, &servers).await;
+        if !unban_failures.is_empty() {
+            tracing::error!(
+                "Failed to unban ban {} on some servers: {:?}",
+                id,
+                unban_failures
+            );
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": "Failed to unban on all servers; database record was kept",
+                    "details": unban_failures,
+                })),
+            )
+                .into_response();
+        }
+    }
 
     let updated_ban = match sqlx::query_as::<_, Ban>(
         "UPDATE bans
@@ -485,7 +543,7 @@ pub async fn update_ban(
              status = $9,
              expires_at = $10
          WHERE id = $11
-         RETURNING *"
+         RETURNING *",
     )
     .bind(&name)
     .bind(&resolved_ids.steam_id)
@@ -504,6 +562,29 @@ pub async fn update_ban(
         Ok(ban) => ban,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
+    let updated_ban_is_effectively_active = is_effectively_active(&updated_ban);
+
+    if !current_is_effectively_active && updated_ban_is_effectively_active {
+        match fetch_all_servers(&state).await {
+            Ok(servers) => {
+                let failures = enforce_ban_on_online_players(&state, &updated_ban, &servers).await;
+                if !failures.is_empty() {
+                    tracing::warn!(
+                        "Ban {} was reactivated but live enforcement had issues: {:?}",
+                        id,
+                        failures
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::error!(
+                    "Ban {} was reactivated but servers could not be loaded for live enforcement: {}",
+                    id,
+                    error
+                );
+            }
+        }
+    }
 
     let _ = log_admin_action(
         &state.db,
@@ -523,16 +604,139 @@ struct ResolvedBanSteamIds {
     steam_id_64: Option<String>,
 }
 
+fn is_effectively_active(ban: &Ban) -> bool {
+    ban.status == "active"
+        && ban
+            .expires_at
+            .map(|value| value > Utc::now())
+            .unwrap_or(true)
+}
+
+fn get_ban_reason(ban: &Ban) -> String {
+    ban.reason
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Banned by admin".to_string())
+}
+
+fn duration_to_server_ban_minutes(duration: &str) -> Option<i64> {
+    if duration == "permanent" {
+        return Some(0);
+    }
+
+    let parsed = parse_duration(duration)?;
+    let seconds = parsed.num_seconds();
+    if seconds <= 0 {
+        return Some(0);
+    }
+
+    Some((seconds + 59) / 60)
+}
+
+fn build_live_enforcement_command(ban: &Ban, userid: i32) -> String {
+    let reason = get_ban_reason(ban);
+
+    match parse_duration(&ban.duration) {
+        Some(duration) if duration.num_seconds() > 0 && duration.num_seconds() < 60 => {
+            format!("kickid {} \"{}\"", userid, reason)
+        }
+        _ => {
+            let minutes = duration_to_server_ban_minutes(&ban.duration).unwrap_or(0);
+            format!("sm_ban #{} {} \"{}\"", userid, minutes, reason)
+        }
+    }
+}
+
+fn parse_status_player_entries(status_output: &str) -> Vec<(i32, String)> {
+    let re = Regex::new(r#"#\s+(\d+)\s+\d+\s+".*?"\s+(\S+)"#).unwrap();
+
+    re.captures_iter(status_output)
+        .filter_map(|capture| {
+            let userid = capture.get(1)?.as_str().parse::<i32>().ok()?;
+            let steam_id = capture.get(2)?.as_str().to_string();
+            Some((userid, steam_id))
+        })
+        .collect()
+}
+
+async fn fetch_all_servers(state: &Arc<AppState>) -> Result<Vec<Server>, sqlx::Error> {
+    sqlx::query_as::<_, Server>("SELECT * FROM servers")
+        .fetch_all(&state.db)
+        .await
+}
+
+async fn enforce_ban_on_online_players(
+    state: &Arc<AppState>,
+    ban: &Ban,
+    servers: &[Server],
+) -> Vec<String> {
+    let steam_id = ban.steam_id.trim();
+    if steam_id.is_empty() || steam_id == "Unknown" || !is_effectively_active(ban) {
+        return Vec::new();
+    }
+
+    let target_steam_id_64 = if let Some(value) = ban.steam_id_64.clone() {
+        Some(value)
+    } else {
+        state.steam_service.resolve_steam_id(steam_id).await
+    };
+
+    let mut failures = Vec::new();
+
+    for server in servers {
+        let address = format!("{}:{}", server.ip, server.port);
+        let password = server.rcon_password.clone().unwrap_or_default();
+
+        let status_output =
+            match crate::utils::rcon::send_command(&address, &password, "status").await {
+                Ok(output) => output,
+                Err(error) => {
+                    failures.push(format!("{} (status lookup) -> {}", server.name, error));
+                    continue;
+                }
+            };
+
+        let players = parse_status_player_entries(&status_output);
+        for (userid, online_steam_id) in players {
+            let is_match = if online_steam_id.eq_ignore_ascii_case(steam_id) {
+                true
+            } else if let Some(target_id64) = target_steam_id_64.as_deref() {
+                state
+                    .steam_service
+                    .resolve_steam_id(&online_steam_id)
+                    .await
+                    .as_deref()
+                    == Some(target_id64)
+            } else {
+                false
+            };
+
+            if !is_match {
+                continue;
+            }
+
+            let command = build_live_enforcement_command(ban, userid);
+            if let Err(error) =
+                crate::utils::rcon::send_command(&address, &password, &command).await
+            {
+                failures.push(format!("{} ({}) -> {}", server.name, command, error));
+            }
+        }
+    }
+
+    failures
+}
+
 fn unban_commands_for_ban(ban: &Ban) -> Vec<String> {
     let mut commands = Vec::new();
 
     let steam_id = ban.steam_id.trim();
-    if !steam_id.is_empty() {
+    if !steam_id.is_empty() && steam_id != "Unknown" {
         commands.push(format!("sm_unban \"{}\"", steam_id));
     }
 
     let ip = ban.ip.trim();
-    if !ip.is_empty() {
+    if !ip.is_empty() && ip != "0.0.0.0" {
         commands.push(format!("sm_unban \"{}\"", ip));
     }
 
@@ -552,7 +756,8 @@ async fn unban_ban_on_servers(ban: &Ban, servers: &[Server]) -> Vec<String> {
         let password = server.rcon_password.clone().unwrap_or_default();
 
         for command in &commands {
-            if let Err(error) = crate::utils::rcon::send_command(&address, &password, command).await {
+            if let Err(error) = crate::utils::rcon::send_command(&address, &password, command).await
+            {
                 failures.push(format!("{} ({}) -> {}", server.name, command, error));
             }
         }
@@ -661,7 +866,11 @@ pub async fn delete_ban(
 
     let unban_failures = unban_ban_on_servers(&ban, &servers).await;
     if !unban_failures.is_empty() {
-        tracing::error!("Failed to unban ban {} on some servers: {:?}", id, unban_failures);
+        tracing::error!(
+            "Failed to unban ban {} on some servers: {:?}",
+            id,
+            unban_failures
+        );
         return (
             StatusCode::BAD_GATEWAY,
             Json(json!({

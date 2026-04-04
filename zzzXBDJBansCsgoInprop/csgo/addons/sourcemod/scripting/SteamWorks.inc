@@ -27,14 +27,39 @@ enum EHTTPStatusCode
     k_EHTTPStatusCode500InternalServerError = 500
 };
 
-typedef SteamWorksHTTPRequestCompleted = function int (Handle request, bool failure, bool requestSuccessful, EHTTPStatusCode statusCode, any contextData);
+typeset SteamWorksHTTPRequestCompleted
+{
+    function int (Handle request, bool failure, bool requestSuccessful, EHTTPStatusCode statusCode);
+    function int (Handle request, bool failure, bool requestSuccessful, EHTTPStatusCode statusCode, any contextData);
+    function int (Handle request, bool failure, bool requestSuccessful, EHTTPStatusCode statusCode, any contextData1, any contextData2);
+};
+
+typeset SteamWorksHTTPHeadersReceived
+{
+    function int (Handle request);
+    function int (Handle request, any contextData);
+    function int (Handle request, any contextData1, any contextData2);
+};
+
+typeset SteamWorksHTTPDataReceived
+{
+    function int (Handle request, int offset, int bytesReceived);
+    function int (Handle request, int offset, int bytesReceived, any contextData);
+    function int (Handle request, int offset, int bytesReceived, any contextData1, any contextData2);
+};
 
 native Handle SteamWorks_CreateHTTPRequest(EHTTPMethod method, const char[] url);
-native bool SteamWorks_SetHTTPRequestContextValue(Handle request, any contextValue);
+native bool SteamWorks_SetHTTPRequestContextValue(Handle request, any contextValue1, any contextValue2=0);
 native bool SteamWorks_SetHTTPRequestNetworkActivityTimeout(Handle request, int timeoutSeconds);
 native bool SteamWorks_SetHTTPRequestHeaderValue(Handle request, const char[] headerName, const char[] headerValue);
 native bool SteamWorks_SetHTTPRequestGetOrPostParameter(Handle request, const char[] paramName, const char[] paramValue);
-native bool SteamWorks_SetHTTPCallbacks(Handle request, SteamWorksHTTPRequestCompleted callback);
+native bool SteamWorks_SetHTTPCallbacks(
+    Handle request,
+    SteamWorksHTTPRequestCompleted completedCallback=INVALID_FUNCTION,
+    SteamWorksHTTPHeadersReceived headersCallback=INVALID_FUNCTION,
+    SteamWorksHTTPDataReceived dataCallback=INVALID_FUNCTION,
+    Handle callingPlugin=INVALID_HANDLE
+);
 native bool SteamWorks_SendHTTPRequest(Handle request);
 native bool SteamWorks_GetHTTPResponseBodySize(Handle request, int &size);
 native bool SteamWorks_GetHTTPResponseBodyData(Handle request, char[] bodyData, int size);

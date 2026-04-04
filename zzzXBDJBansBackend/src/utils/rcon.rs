@@ -231,6 +231,5 @@ fn next_packet<'a>(
 }
 
 fn read_i32(cursor: &mut Cursor<&[u8]>) -> Result<i32, String> {
-    ReadBytesExt::read_i32::<LittleEndian>(cursor)
-        .map_err(|e| format!("Invalid RCON packet: {e}"))
+    ReadBytesExt::read_i32::<LittleEndian>(cursor).map_err(|e| format!("Invalid RCON packet: {e}"))
 }

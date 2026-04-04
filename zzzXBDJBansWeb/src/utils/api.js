@@ -1,5 +1,13 @@
 import axios from 'axios'
 
+const getDefaultApiBaseUrl = () => {
+    if (import.meta.env.PROD) {
+        return '/api'
+    }
+
+    return import.meta.env.VITE_API_BASE_URL || '/api'
+}
+
 const api = axios.create({
     // baseURL is set dynamically in the request interceptor
     headers: {
@@ -13,10 +21,8 @@ api.interceptors.request.use(config => {
     // and if we have a runtime config loaded
     if (window.runtimeConfig && window.runtimeConfig.apiBaseUrl) {
         config.baseURL = window.runtimeConfig.apiBaseUrl;
-    } else if (import.meta.env.VITE_API_BASE_URL) {
-        config.baseURL = import.meta.env.VITE_API_BASE_URL;
     } else {
-        config.baseURL = '/api';
+        config.baseURL = getDefaultApiBaseUrl();
     }
 
     const token = localStorage.getItem('token')

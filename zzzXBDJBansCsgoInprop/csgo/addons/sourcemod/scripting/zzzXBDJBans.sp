@@ -36,7 +36,7 @@ public void OnPluginStart()
     g_cvApiUrl = CreateConVar("zzzxbdjbans_api_url", "http://127.0.0.1:3000/api/plugin/access-check", "Backend access-check API URL");
     g_cvApiToken = CreateConVar("zzzxbdjbans_api_token", "", "Backend plugin API token");
     g_cvRequestTimeout = CreateConVar("zzzxbdjbans_api_timeout", "10", "HTTP timeout in seconds", _, true, 3.0, true, 30.0);
-    g_cvFailOpen = CreateConVar("zzzxbdjbans_fail_open", "0", "Allow players to stay connected when the backend is temporarily unavailable.");
+    g_cvFailOpen = CreateConVar("zzzxbdjbans_fail_open", "1", "Allow players to stay connected when the backend or database is temporarily unavailable.");
     g_cvFailureRetryLimit = CreateConVar("zzzxbdjbans_failure_retry_limit", "2", "How many backend failure retries are attempted before enforcing denial.", _, true, 0.0, true, 10.0);
     g_cvRetryMaxDelay = CreateConVar("zzzxbdjbans_retry_max_delay", "30", "Maximum retry delay in seconds for pending/backend failures.", _, true, 2.0, true, 120.0);
 
@@ -132,8 +132,10 @@ void SendAccessCheck(int client, bool strict)
 
     g_bRequestPending[client] = true;
 
+    SteamWorksHTTPRequestCompleted callback = OnAccessCheckCompleted;
+
     SteamWorks_SetHTTPRequestNetworkActivityTimeout(request, g_cvRequestTimeout.IntValue);
-    SteamWorks_SetHTTPRequestContextValue(request, contextValue);
+    SteamWorks_SetHTTPRequestContextValue(request, contextValue, 0);
     SteamWorks_SetHTTPRequestHeaderValue(request, "X-Plugin-Token", apiToken);
     SteamWorks_SetHTTPRequestHeaderValue(request, "Content-Type", "application/x-www-form-urlencoded");
     SteamWorks_SetHTTPRequestGetOrPostParameter(request, "server_id", serverId);
@@ -141,7 +143,7 @@ void SendAccessCheck(int client, bool strict)
     SteamWorks_SetHTTPRequestGetOrPostParameter(request, "steam_id", steamId);
     SteamWorks_SetHTTPRequestGetOrPostParameter(request, "player_name", playerName);
     SteamWorks_SetHTTPRequestGetOrPostParameter(request, "ip_address", ip);
-    SteamWorks_SetHTTPCallbacks(request, OnAccessCheckCompleted);
+    SteamWorks_SetHTTPCallbacks(request, callback, INVALID_FUNCTION, INVALID_FUNCTION, GetMyHandle());
 
     if (!SteamWorks_SendHTTPRequest(request))
     {
@@ -336,11 +338,30 @@ void ExtractResponseValue(const char[] body, const char[] key, char[] output, in
 
 void HandleAccessFailure(int client, bool strict, const char[] reason)
 {
-    if (strict && client > 0 && IsClientInGame(client))
+    if (client <= 0)
+    {
+        return;
+    }
+
+    if (strict && g_cvFailOpen.BoolValue)
+    {
+        if (IsClientInGame(client))
+        {
+            LogError("Access check failed open for %N: %s", client, reason);
+        }
+        else
+        {
+            LogError("Access check failed open for client %d: %s", client, reason);
+        }
+        ResetRetryState(client);
+        return;
+    }
+
+    if (strict && IsClientInGame(client))
     {
         KickClient(client, "验证服务不可用：%s", reason);
     }
-    else if (client > 0)
+    else
     {
         LogError("Access re-check failed for %N: %s", client, reason);
     }

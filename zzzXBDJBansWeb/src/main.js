@@ -4,6 +4,14 @@ import App from './App.vue'
 import router from './router'
 import { useAuthStore } from './composables/useAuthStore'
 
+const getDefaultApiBaseUrl = () => {
+    if (import.meta.env.PROD) {
+        return '/api'
+    }
+
+    return import.meta.env.VITE_API_BASE_URL || '/api'
+}
+
 const loadConfig = async () => {
     try {
         const response = await fetch('/config.json');
@@ -12,7 +20,7 @@ const loadConfig = async () => {
     } catch (error) {
         console.error('Failed to load config, using defaults', error);
         window.runtimeConfig = {
-            apiBaseUrl: import.meta.env.VITE_API_BASE_URL || '/api'
+            apiBaseUrl: getDefaultApiBaseUrl()
         };
     }
 };

@@ -37,13 +37,21 @@ npm install
 
 ### 3. 配置环境变量
 
-项目根目录下包含 `.env.development` 和 `.env.production` 文件。请根据您的后端地址进行配置：
+项目根目录下包含 `.env.development` 和 `.env.production` 文件：
 
 **示例 `.env.development`**:
 
 ```ini
 VITE_API_BASE_URL=http://192.168.0.136:8080/api
 ```
+
+**示例 `.env.production`**:
+
+```ini
+VITE_API_BASE_URL=/api
+```
+
+生产环境默认应通过同源 `/api` 访问后端，由 Nginx 或其他反向代理转发到实际后端地址；不要把开发机 IP 写进生产配置。
 
 ### 4. 启动开发服务器
 
@@ -56,7 +64,7 @@ npm run dev
 - 本机访问 `http://localhost:5173`
 - 局域网其他设备访问 `http://<前端机器IP>:5173`
 
-默认开发配置会请求 `http://192.168.0.136:8080/api`。
+默认开发配置会请求 `http://192.168.0.136:8080/api`，生产环境默认请求同源 `/api`。
 
 ## 📦 构建生产版本
 

@@ -219,6 +219,13 @@ public Action Command_InterruptPauseStart(int client, int args)
 		return Plugin_Handled;
 	}
 
+	if (!ShouldMonitorClientRun(client))
+	{
+		ReplyToCommand(client, "[InterruptPause] 你需要先处于有效且未暂停的 GOKZ 计时中，自动中断保存才会生效。");
+		return Plugin_Handled;
+	}
+
+	ActivateRunMonitorState(client);
 	ReplyToCommand(client, "[InterruptPause] 自动监控保存现在默认开启。只要你处于有效计时且时间大于 0，插件就会自动周期保存，并在断线时做最后一次快照。");
 	return Plugin_Handled;
 }
@@ -394,8 +401,8 @@ bool SendInterruptPauseRequest(Handle request, SteamWorksHTTPRequestCompleted ca
 		return false;
 	}
 
-	SteamWorks_SetHTTPRequestContextValue(request, GetClientUserId(client));
-	SteamWorks_SetHTTPCallbacks(request, callback);
+	SteamWorks_SetHTTPRequestContextValue(request, GetClientUserId(client), 0);
+	SteamWorks_SetHTTPCallbacks(request, callback, INVALID_FUNCTION, INVALID_FUNCTION, GetMyHandle());
 	if (!SteamWorks_SendHTTPRequest(request))
 	{
 		CloseHandle(request);
@@ -535,9 +542,7 @@ void RefreshRunMonitorState(int client)
 	int checkpointCount = GOKZ_GetCheckpointCount(client);
 	if (!gB_AutoInterruptSaveOnDisconnect[client])
 	{
-		gB_AutoInterruptSaveOnDisconnect[client] = true;
-		gI_LastObservedCheckpointCount[client] = checkpointCount;
-		gF_NextPeriodicSnapshotAt[client] = GetGameTime() + PERIODIC_SNAPSHOT_INTERVAL_SECONDS;
+		ActivateRunMonitorState(client);
 		DebugLog("monitor activated client=%N time=%.3f cps=%d", client, currentTime, checkpointCount);
 	}
 
@@ -587,9 +592,19 @@ void RefreshRunMonitorState(int client)
 
 void TryAutoSaveSnapshotOnDisconnect(int client)
 {
-	if (client <= 0 || client > MaxClients || !IsClientInGame(client) || IsFakeClient(client) || !gB_AutoInterruptSaveOnDisconnect[client])
+	if (client <= 0 || client > MaxClients || !IsClientInGame(client) || IsFakeClient(client))
 	{
 		return;
+	}
+
+	if (!gB_AutoInterruptSaveOnDisconnect[client])
+	{
+		if (!ShouldMonitorClientRun(client))
+		{
+			return;
+		}
+
+		ActivateRunMonitorState(client);
 	}
 
 	if (!IsClientEligibleForInterruptSave(client))
@@ -606,6 +621,18 @@ void TryAutoSaveSnapshotOnDisconnect(int client)
 
 	WriteSnapshot(client, snapshot);
 	CleanupSnapshot(snapshot);
+}
+
+void ActivateRunMonitorState(int client)
+{
+	if (client <= 0 || client > MaxClients)
+	{
+		return;
+	}
+
+	gB_AutoInterruptSaveOnDisconnect[client] = true;
+	gI_LastObservedCheckpointCount[client] = GOKZ_GetCheckpointCount(client);
+	gF_NextPeriodicSnapshotAt[client] = GetGameTime() + PERIODIC_SNAPSHOT_INTERVAL_SECONDS;
 }
 
 void SchedulePendingInterruptRefresh(int client, float delay)

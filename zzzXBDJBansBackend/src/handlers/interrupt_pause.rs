@@ -788,6 +788,11 @@ fn plugin_snapshot_state_response(
     status_code: StatusCode,
     snapshot: &PluginInterruptPauseSnapshotRow,
 ) -> Response {
+    let plugin_status = match snapshot.restore_status.as_str() {
+        "none" => "available",
+        other => other,
+    };
+
     let message = match snapshot.restore_status.as_str() {
         "approved" => "已获得管理员授权，可恢复中断存档",
         "pending" => "恢复申请审核中",
@@ -801,7 +806,7 @@ fn plugin_snapshot_state_response(
     let reject_reason = snapshot.reject_reason.as_deref().unwrap_or("");
     let body = format!(
         "status={}\nmessage={}\nid={}\nmap_name={}\ntime_seconds={:.3}\ncheckpoint_count={}\nteleport_count={}\nmode={}\ncourse={}\nreject_reason={}\n",
-        snapshot.restore_status,
+        plugin_status,
         sanitize_text(message),
         snapshot.id,
         sanitize_text(&snapshot.map_name),

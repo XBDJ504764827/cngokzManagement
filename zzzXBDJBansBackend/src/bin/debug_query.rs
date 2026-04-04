@@ -11,10 +11,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .connect(&database_url)
         .await?;
 
-    let in_whitelist: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM whitelist WHERE steam_id_64 = '76561198298405388'")
-            .fetch_one(&pool)
-            .await?;
+    let in_whitelist: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM whitelist WHERE steam_id_64 = '76561198298405388'",
+    )
+    .fetch_one(&pool)
+    .await?;
 
     println!("DEBUG RESULT: In Whitelist = {}", in_whitelist);
 

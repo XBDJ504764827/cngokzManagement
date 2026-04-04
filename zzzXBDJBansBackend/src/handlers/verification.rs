@@ -232,11 +232,12 @@ pub async fn update_verification(
             )
                 .into_response();
         }
-        if let Err(e) = sqlx::query("UPDATE player_verifications SET status = $1 WHERE steam_id = $2")
-            .bind(s)
-            .bind(&steam_id)
-            .execute(&state.db)
-            .await
+        if let Err(e) =
+            sqlx::query("UPDATE player_verifications SET status = $1 WHERE steam_id = $2")
+                .bind(s)
+                .bind(&steam_id)
+                .execute(&state.db)
+                .await
         {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -247,11 +248,12 @@ pub async fn update_verification(
     }
 
     if let Some(r) = &payload.reason {
-        if let Err(e) = sqlx::query("UPDATE player_verifications SET reason = $1 WHERE steam_id = $2")
-            .bind(r)
-            .bind(&steam_id)
-            .execute(&state.db)
-            .await
+        if let Err(e) =
+            sqlx::query("UPDATE player_verifications SET reason = $1 WHERE steam_id = $2")
+                .bind(r)
+                .bind(&steam_id)
+                .execute(&state.db)
+                .await
         {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,

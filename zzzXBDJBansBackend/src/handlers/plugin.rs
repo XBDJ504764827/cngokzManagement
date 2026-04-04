@@ -308,10 +308,10 @@ async fn evaluate_verification(
                      SET status = 'denied', reason = $1, updated_at = NOW()
                      WHERE steam_id = $2",
                 )
-                    .bind(&message)
-                    .bind(steam_id_64)
-                    .execute(&state.db)
-                    .await?;
+                .bind(&message)
+                .bind(steam_id_64)
+                .execute(&state.db)
+                .await?;
 
                 Ok(VerificationFlow::Deny(message))
             }
