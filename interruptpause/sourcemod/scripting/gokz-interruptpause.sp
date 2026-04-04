@@ -68,7 +68,7 @@ public Plugin myinfo =
 	name = PLUGIN_NAME,
 	author = "wqq",
 	description = "Save and restore a paused GOKZ run across reconnects.",
-	version = "1.4.4",
+	version = "1.5.0",
 	url = ""
 };
 
@@ -760,6 +760,7 @@ void ShowPendingInterruptMenu(int client)
 		case InterruptRestoreState_Pending:
 		{
 			StrCat(title, sizeof(title), "审核状态: 待审核\n");
+			StrCat(title, sizeof(title), "提示: 开始新计时将自动终止该中断存档\n");
 			strcopy(requestLabel, sizeof(requestLabel), "恢复申请审核中");
 			requestDraw = ITEMDRAW_DISABLED;
 		}
@@ -792,8 +793,11 @@ void ShowPendingInterruptMenu(int client)
 	menu.ExitButton = false;
 	menu.Pagination = MENU_NO_PAGINATION;
 	menu.SetTitle(title);
+	menu.AddItem("checkpoint", "1. 存点");
+	menu.AddItem("teleport", "2. 传送");
+	Format(requestLabel, sizeof(requestLabel), "3. %s", requestLabel);
 	menu.AddItem("request_restore", requestLabel, requestDraw);
-	menu.AddItem("abort", "终止中断");
+	menu.AddItem("abort", "4. 终止中断");
 	menu.Display(client, MENU_TIME_FOREVER);
 	gB_PendingInterruptMenuDisplayed[client] = true;
 }
@@ -818,7 +822,15 @@ public int MenuHandler_PendingInterrupt(Menu menu, MenuAction action, int param1
 		char info[32];
 		menu.GetItem(param2, info, sizeof(info));
 
-		if (StrEqual(info, "request_restore"))
+		if (StrEqual(info, "checkpoint"))
+		{
+			HandlePendingInterruptCheckpoint(param1);
+		}
+		else if (StrEqual(info, "teleport"))
+		{
+			HandlePendingInterruptTeleport(param1);
+		}
+		else if (StrEqual(info, "request_restore"))
 		{
 			HandlePendingInterruptRestore(param1);
 		}
@@ -841,6 +853,44 @@ public int MenuHandler_PendingInterrupt(Menu menu, MenuAction action, int param1
 	}
 
 	return 0;
+}
+
+void HandlePendingInterruptCheckpoint(int client)
+{
+	if (!CanUsePendingInterruptMovementAction(client))
+	{
+		return;
+	}
+
+	if (!RunPendingInterruptCheckpointCommand(client))
+	{
+		ReplyToCommand(client, "[InterruptPause] 当前服务器没有可用的存点指令。");
+		return;
+	}
+
+	if (gB_HasPendingInterrupt[client])
+	{
+		SchedulePendingInterruptMenu(client, 0.2);
+	}
+}
+
+void HandlePendingInterruptTeleport(int client)
+{
+	if (!CanUsePendingInterruptMovementAction(client))
+	{
+		return;
+	}
+
+	if (!RunPendingInterruptTeleportCommand(client))
+	{
+		ReplyToCommand(client, "[InterruptPause] 当前服务器没有可用的传送指令。");
+		return;
+	}
+
+	if (gB_HasPendingInterrupt[client])
+	{
+		SchedulePendingInterruptMenu(client, 0.2);
+	}
 }
 
 void HandlePendingInterruptRestore(int client)
@@ -1063,6 +1113,11 @@ public int OnPeekInterruptPauseSnapshotCompleted(Handle request, bool failure, b
 	GetCurrentMap(currentMap, sizeof(currentMap));
 	gB_PendingInterruptMapMatches[client] = StrEqual(currentMap, mapName, false);
 
+	if (AbortPendingInterruptForActiveTimer(client))
+	{
+		return 0;
+	}
+
 	if (gI_PendingInterruptRestoreState[client] == InterruptRestoreState_Pending)
 	{
 		SchedulePendingInterruptRefresh(client, INTERRUPT_REFRESH_INTERVAL_SECONDS);
@@ -1165,6 +1220,11 @@ public int OnRequestInterruptPauseRestoreCompleted(Handle request, bool failure,
 	if (message[0] != '\0')
 	{
 		ReplyToCommand(client, "[InterruptPause] %s", message);
+	}
+
+	if (AbortPendingInterruptForActiveTimer(client))
+	{
+		return 0;
 	}
 
 	if (gI_PendingInterruptRestoreState[client] == InterruptRestoreState_Approved)
@@ -1320,6 +1380,72 @@ void RequestAbortInterruptPauseSnapshotSilently(int client)
 	SendInterruptPauseRequest(request, OnAbortInterruptPauseSilentlyCompleted, client);
 }
 
+bool CanUsePendingInterruptMovementAction(int client)
+{
+	if (!CanUsePlayerCommand(client))
+	{
+		return false;
+	}
+
+	if (!gB_HasPendingInterrupt[client])
+	{
+		return false;
+	}
+
+	if (!IsPlayerAlive(client))
+	{
+		ReplyToCommand(client, "[InterruptPause] 你必须先出生，才能使用存点或传送。");
+		return false;
+	}
+
+	return true;
+}
+
+bool RunPendingInterruptCheckpointCommand(int client)
+{
+	if (IsRegisteredClientCommand("sm_checkpoint"))
+	{
+		FakeClientCommand(client, "sm_checkpoint");
+		return true;
+	}
+
+	if (IsRegisteredClientCommand("sm_cp"))
+	{
+		FakeClientCommand(client, "sm_cp");
+		return true;
+	}
+
+	return false;
+}
+
+bool RunPendingInterruptTeleportCommand(int client)
+{
+	if (IsRegisteredClientCommand("sm_gocheck"))
+	{
+		FakeClientCommand(client, "sm_gocheck");
+		return true;
+	}
+
+	if (IsRegisteredClientCommand("sm_teleport"))
+	{
+		FakeClientCommand(client, "sm_teleport");
+		return true;
+	}
+
+	if (IsRegisteredClientCommand("sm_tp"))
+	{
+		FakeClientCommand(client, "sm_tp");
+		return true;
+	}
+
+	return false;
+}
+
+bool IsRegisteredClientCommand(const char[] command)
+{
+	return GetCommandFlags(command) != INVALID_FCVAR_FLAGS;
+}
+
 void FormatRunTime(float time, char[] buffer, int maxlen)
 {
 	int totalSeconds = RoundToFloor(time);
@@ -1332,6 +1458,7 @@ void FormatRunTime(float time, char[] buffer, int maxlen)
 
 public void GOKZ_OnTimerStart_Post(int client, int course)
 {
+	AbortPendingInterruptOnNewTimerStart(client);
 	ResetRunMonitorState(client);
 	DebugLogGlobalState(client, "GOKZ_OnTimerStart_Post");
 }
@@ -1355,6 +1482,34 @@ public void GOKZ_OnTimerStopped(int client)
 	ResetRunMonitorState(client);
 	DebugLogGlobalState(client, "GOKZ_OnTimerStopped");
 	DebugLog("global hook timer-stopped client=%N", client);
+}
+
+void AbortPendingInterruptOnNewTimerStart(int client)
+{
+	AbortPendingInterruptForActiveTimer(client);
+}
+
+bool AbortPendingInterruptForActiveTimer(int client)
+{
+	if (client <= 0 || client > MaxClients || !IsClientInGame(client) || IsFakeClient(client))
+	{
+		return false;
+	}
+
+	if (!gB_HasPendingInterrupt[client] || gI_PendingInterruptRestoreState[client] != InterruptRestoreState_Pending)
+	{
+		return false;
+	}
+
+	if (!GOKZ_GetTimerRunning(client) && !GOKZ_GetPaused(client))
+	{
+		return false;
+	}
+
+	RequestAbortInterruptPauseSnapshotSilently(client);
+	ResetPendingInterruptState(client);
+	ReplyToCommand(client, "[InterruptPause] 你在恢复申请审核期间开始了新的计时，本次中断存档已自动终止，无法恢复。");
+	return true;
 }
 
 bool CanUsePlayerCommand(int client)
