@@ -71,6 +71,15 @@ cngokzManagement/
 4. 管理员在 Web 后台审核
 5. 插件拉取已批准快照并执行恢复
 
+### 封禁同步链路
+
+1. 管理员在游戏内使用 `!ban` / `!unban` 或控制台使用 `sm_ban` / `sm_unban`
+2. `zzzXBDJBans.smx` 把目标 Steam 标识统一解析后同步到后端
+3. 后端以 `steam_id_64` 作为封禁、解封、删除封禁的主标识写库
+4. 插件在本地默认执行 IP 封禁 / IP 解封
+5. 网站端主动下发封禁时只调用内部命令 `zzzxbdjbans_sysban` / `zzzxbdjbans_sysunban`
+6. 这样可以避免网站手动封禁与插件监听 `sm_ban` / `sm_unban` 时重复写入两条记录
+
 ## 组件关系图
 
 ```text
@@ -176,6 +185,9 @@ zzzXBDJBansWeb/
 - 玩家进服时调用后端 API
 - 执行允许进入、等待验证或拒绝进入
 - 用 `server_id` 标识具体游戏服
+- 监听 `!ban`、`!unban`、`sm_ban`、`sm_unban`
+- 把 `SteamID2 / SteamID3 / SteamID64` 统一转换为 `steam_id_64` 后同步到网站
+- 游戏内默认执行 IP 封禁，解封时同时执行 `removeid` 和 `removeip`
 
 ### `interruptpause`
 
@@ -261,6 +273,22 @@ sm_cvar zzzxbdjbans_api_url "http://127.0.0.1:8080/api/plugin/access-check"
 sm_cvar zzzxbdjbans_api_token "replace_with_plugin_token"
 sm_cvar zzzxbdjbans_api_timeout "10"
 ```
+
+当前封禁行为说明：
+
+- 游戏内管理员支持：
+  - `!ban <玩家steamid/steamid64/#userid> <分钟|0> <理由>`
+  - `!unban <玩家steamid/steamid64/#userid>`
+- 服务器控制台支持：
+  - `sm_ban <steamid/steamid64/#userid> <分钟|0> [理由]`
+  - `sm_unban <steamid/steamid64|ip>`
+- `0` 表示永久封禁
+- 插件与后端现在统一以 `steam_id_64` 为主键处理封禁、解封、删除封禁
+- 即使输入的是 `STEAM_X:Y:Z` 或 `[U:1:Z]`，后端也会先转换为 `steam_id_64`
+- 网站端对服务器下发指令时会走：
+  - `zzzxbdjbans_sysban`
+  - `zzzxbdjbans_sysunban`
+- 这两个内部命令只用于网站到游戏服的同步，不应人工直接当作日常管理命令使用
 
 ### `interruptpause` 插件配置
 
@@ -475,7 +503,10 @@ BOOTSTRAP_ADMIN_PASSWORD=change_me_now
 
 ```bash
 cd /home/xbdj/cngokzManagement/zzzXBDJBansCsgoInprop/csgo/addons/sourcemod/scripting
-/home/xbdj/cngokzManagement/sourcemod-1.11.0-git6970-linux/addons/sourcemod/scripting/spcomp zzzXBDJBans.sp
+/home/xbdj/cngokzManagement/sourcemod-1.11.0-git6970-linux/addons/sourcemod/scripting/spcomp \
+  /home/xbdj/cngokzManagement/zzzXBDJBansCsgoInprop/csgo/addons/sourcemod/scripting/zzzXBDJBans.sp \
+  -i/home/xbdj/cngokzManagement/zzzXBDJBansCsgoInprop/csgo/addons/sourcemod/scripting \
+  -o/home/xbdj/cngokzManagement/zzzXBDJBansCsgoInprop/csgo/addons/sourcemod/plugins/zzzXBDJBans.smx
 ```
 
 #### 编译 `interruptpause`
@@ -516,7 +547,10 @@ npm run build
 
 ```bash
 cd zzzXBDJBansCsgoInprop/csgo/addons/sourcemod/scripting
-/home/xbdj/cngokzManagement/sourcemod-1.11.0-git6970-linux/addons/sourcemod/scripting/spcomp zzzXBDJBans.sp
+/home/xbdj/cngokzManagement/sourcemod-1.11.0-git6970-linux/addons/sourcemod/scripting/spcomp \
+  /home/xbdj/cngokzManagement/zzzXBDJBansCsgoInprop/csgo/addons/sourcemod/scripting/zzzXBDJBans.sp \
+  -i/home/xbdj/cngokzManagement/zzzXBDJBansCsgoInprop/csgo/addons/sourcemod/scripting \
+  -o/home/xbdj/cngokzManagement/zzzXBDJBansCsgoInprop/csgo/addons/sourcemod/plugins/zzzXBDJBans.smx
 ```
 
 ```bash

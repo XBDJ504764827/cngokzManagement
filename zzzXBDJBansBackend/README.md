@@ -15,6 +15,7 @@ zzzXBDJBans 的 Rust 后端服务。
 - 管理中断暂停快照和恢复授权
 - 提供 Web 后台使用的管理 API
 - 提供游戏服插件使用的 `POST /api/plugin/access-check`
+- 提供游戏服插件使用的封禁同步和解封同步接口
 - 提供游戏服 `interruptpause` 插件使用的中断暂停 API
 - 后台异步处理 `player_cache` 和 `player_verifications` 验证任务
 
@@ -41,6 +42,8 @@ zzzXBDJBans 的 Rust 后端服务。
 ### 插件侧
 
 - `POST /api/plugin/access-check`
+- `POST /api/plugin/ban`
+- `POST /api/plugin/unban`
 - `POST /api/plugin/interrupt-pause/save`
 - `POST /api/plugin/interrupt-pause/peek`
 - `POST /api/plugin/interrupt-pause/request-restore`
@@ -62,6 +65,24 @@ X-Plugin-Token: <PLUGIN_API_TOKEN>
 - `player_name`
 - `ip_address`
 
+封禁同步接口补充字段：
+
+- `admin_name`
+- `admin_steam_id_64`
+- `target_name`
+- `target_steam_id`
+- `target_steam_id_64`
+- `target_ip`
+- `duration_minutes`
+- `reason`
+
+解封同步接口补充字段：
+
+- `admin_name`
+- `admin_steam_id_64`
+- `target_steam_id`
+- `target_steam_id_64`
+
 返回是纯文本键值对，当前格式为：
 
 ```text
@@ -69,6 +90,33 @@ action=allow|pending|deny
 retry_after=2
 message=...
 ```
+
+对于封禁 / 解封同步接口，成功时会返回：
+
+```text
+action=banned|unbanned
+message=...
+ips=...
+steam_id=...
+steam_id_64=...
+steam_id_3=...
+```
+
+## Steam 标识规则
+
+当前后端对封禁系统统一采用以下规则：
+
+- `steam_id_64` 是封禁、解封、删除封禁和网站同步的主标识
+- Web、插件、控制台传入的 `SteamID2 / SteamID3 / SteamID64` 都会先尝试解析为 `steam_id_64`
+- 数据库中仍保留 `steam_id` 和 `steam_id_3` 作为兼容字段，便于老命令和历史数据联动
+- 网站端手动封禁、编辑封禁、删除封禁时也会优先走 `steam_id_64`
+- 插件端 `sm_ban`、`!ban`、`sm_unban`、`!unban` 同步到后端时也会提交 `target_steam_id_64`
+
+这意味着：
+
+- 新增封禁记录应视 `steam_id_64` 为唯一主账号标识
+- 如果输入是 `STEAM_X:Y:Z` 或 `[U:1:Z]`，后端会先转换再处理
+- 无法解析成 `steam_id_64` 的目标，封禁同步和网站写入会直接拒绝
 
 ## 环境变量
 
@@ -134,6 +182,20 @@ zzzXBDJBansBackend/migrations
 4. 后端检查白名单、验证缓存和封禁状态
 5. 后端返回 `allow`、`pending` 或 `deny`
 
+当前封禁同步流程：
+
+1. 管理员在游戏内或控制台执行 `!ban` / `!unban` / `sm_ban` / `sm_unban`
+2. `zzzXBDJBans.smx` 同步到 `/api/plugin/ban` 或 `/api/plugin/unban`
+3. 后端以 `steam_id_64` 为主键写入或更新 `bans`
+4. 网站端下发实时封禁时不再调用 `sm_ban` / `sm_unban`
+5. 网站只向游戏服发送内部命令 `zzzxbdjbans_sysban` / `zzzxbdjbans_sysunban`
+
+这样做的目的：
+
+- 避免网站手动封禁同时被插件命令监听二次写库
+- 避免解封时两条重复记录一起被置为 `unbanned`
+- 保持数据库里一条业务动作只对应一条核心封禁记录
+
 这意味着：
 
 - 同一 IP 下多开多个游戏服是支持的
@@ -145,6 +207,8 @@ zzzXBDJBansBackend/migrations
 - 修改 `PLUGIN_API_TOKEN` 时，需要同步更新所有游戏服配置
 - 如果插件反馈一直 `pending`，先检查 `services/verification_worker.rs`
 - 如果多服部署，请优先核对 `servers` 表和每台服的 `server_id`
+- 如果遇到网站封禁重复写库，先确认网站侧是否仍在调用 `sm_ban` / `sm_unban`
+- 如果遇到玩家已解封但仍无法进服，先确认插件端本地是否已执行 `removeid` 和 `removeip`
 
 ## 兼容性检查
 
